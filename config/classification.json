@@ -1,0 +1,33 @@
+{
+  "ruleset_version": "1.1.0",
+  "known_core_blocks": [
+    "core/paragraph",
+    "core/shortcode",
+    "core/code",
+    "core/html",
+    "core/embed"
+  ],
+  "known_third_party_blocks": [
+    "kevinbatdorf/code-block-pro"
+  ],
+  "known_syntaxhighlighter_shortcodes": [
+    "sourcecode",
+    "code"
+  ],
+  "known_shortcodes": [
+    "caption"
+  ],
+  "paired_shortcodes": [
+    "caption"
+  ],
+  "risk_thresholds": {
+    "large_table_rows": 20,
+    "large_table_columns": 8,
+    "large_table_cells": 100,
+    "many_links": 50,
+    "many_images": 20,
+    "very_long_content": 30000,
+    "protected_structure_count": 20,
+    "protected_structure_ratio": 0.30
+  }
+}

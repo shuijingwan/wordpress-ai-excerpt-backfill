@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment and local settings
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Generated and sensitive data
+data/raw/
+data/analysis/
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*~
+.DS_Store
