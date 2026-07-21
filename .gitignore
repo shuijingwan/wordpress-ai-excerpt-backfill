@@ -17,6 +17,11 @@ venv/
 # Generated and sensitive data
 data/raw/
 data/analysis/
+data/backups/
+data/logs/
+*.execution.json
+*.pre-write.json
+**/rejected/
 
 # Temporary files
 *.log
