@@ -18,7 +18,8 @@ def assess_risk(detection, classification, config):
     thresholds = config["risk_thresholds"]
     reasons = set()
 
-    if rules & {"GB_BLOCK_DAMAGED", "CODE_STRUCTURE_DAMAGED", "SC_UNCLOSED", "SC_ORPHAN_CLOSE"}:
+    if rules & {"GB_BLOCK_DAMAGED", "CODE_STRUCTURE_DAMAGED", "SC_UNCLOSED", "SC_ORPHAN_CLOSE",
+                 "SH_DAMAGED", "SH_ATTRIBUTES_INVALID"}:
         reasons.add("RISK_DAMAGED_STRUCTURE")
     if classification["editor_format"] == "mixed":
         reasons.add("RISK_MIXED_EDITOR_FORMAT")

@@ -2,6 +2,7 @@
 
 from collections import Counter
 from html.parser import HTMLParser
+import json
 import re
 
 
@@ -21,6 +22,9 @@ SHORTCODE_RE = re.compile(
 HTML_CODE_REGION_RE = re.compile(
     r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)\s*>",
     re.IGNORECASE | re.DOTALL,
+)
+TEXTAREA_REGION_RE = re.compile(
+    r"<textarea\b[^>]*>.*?</textarea\s*>", re.IGNORECASE | re.DOTALL
 )
 
 
@@ -153,12 +157,44 @@ def _outside_blocks_has_substantial_content(content):
 
 
 def _parse_blocks(content, config, add):
-    matches = list(BLOCK_COMMENT_RE.finditer(content))
+    textarea_ranges = [(match.start(), match.end()) for match in TEXTAREA_REGION_RE.finditer(content)]
+    matches = [
+        match for match in BLOCK_COMMENT_RE.finditer(content)
+        if not _inside_ranges(match.start(), textarea_ranges)
+    ]
     consumed_ranges = {(match.start(), match.end()) for match in matches}
     stack = []
     blocks = Counter()
     top_ranges = []
     damaged_ranges = []
+    syntaxhighlighter_count = 0
+    syntaxhighlighter_languages = []
+    syntaxhighlighter_damaged = False
+    syntaxhighlighter_attributes_valid = True
+
+    def record_syntaxhighlighter(opening):
+        nonlocal syntaxhighlighter_count, syntaxhighlighter_attributes_valid
+        syntaxhighlighter_count += 1
+        add("SH_GUTENBERG_BLOCK", opening[1], opening[2])
+        raw_attributes = (opening[3] or "").strip()
+        if not raw_attributes:
+            return
+        try:
+            attributes = json.loads(raw_attributes)
+        except (json.JSONDecodeError, TypeError):
+            syntaxhighlighter_attributes_valid = False
+            add("SH_ATTRIBUTES_INVALID", opening[1], opening[2])
+            return
+        if not isinstance(attributes, dict):
+            syntaxhighlighter_attributes_valid = False
+            add("SH_ATTRIBUTES_INVALID", opening[1], opening[2])
+            return
+        language = attributes.get("language")
+        if isinstance(language, str) and language.strip():
+            syntaxhighlighter_languages.append(language.strip().lower())
+        elif language is not None:
+            syntaxhighlighter_attributes_valid = False
+            add("SH_ATTRIBUTES_INVALID", opening[1], opening[2])
 
     for match in matches:
         name = _block_name(match.group("name"))
@@ -166,21 +202,35 @@ def _parse_blocks(content, config, add):
         if match.group("close"):
             if not stack or stack[-1][0] != name:
                 damaged_ranges.append((match.start(), match.end()))
+                if name == "syntaxhighlighter/code":
+                    syntaxhighlighter_damaged = True
+                    add("SH_DAMAGED", match.start(), match.end())
                 continue
-            _, start, _ = stack.pop()
+            opening = stack.pop()
+            _, start, _, _ = opening
+            if name == "syntaxhighlighter/code":
+                record_syntaxhighlighter(opening)
             if not stack:
                 top_ranges.append((start, match.end()))
         else:
             blocks[name] += 1
             if match.group("self"):
+                if name == "syntaxhighlighter/code":
+                    syntaxhighlighter_damaged = True
+                    add("SH_DAMAGED", match.start(), match.end())
                 if not stack:
                     top_ranges.append((match.start(), match.end()))
             else:
-                stack.append((name, match.start(), match.end()))
-    damaged_ranges.extend((start, end) for _, start, end in stack)
+                stack.append((name, match.start(), match.end(), match.group("attrs")))
+    damaged_ranges.extend((start, end) for _, start, end, _ in stack)
+    for name, start, end, _ in stack:
+        if name == "syntaxhighlighter/code":
+            syntaxhighlighter_damaged = True
+            add("SH_DAMAGED", start, end)
 
     for candidate in HTML_COMMENT_CANDIDATE_RE.finditer(content):
-        if (candidate.start(), candidate.end()) in consumed_ranges:
+        if ((candidate.start(), candidate.end()) in consumed_ranges
+                or _inside_ranges(candidate.start(), textarea_ranges)):
             continue
         if WP_COMMENT_BODY_RE.match(candidate.group("body")):
             damaged_ranges.append((candidate.start(), candidate.end()))
@@ -223,6 +273,12 @@ def _parse_blocks(content, config, add):
         "damaged": damaged,
         "has_block_comments": bool(matches),
         "top_ranges": top_ranges,
+        "syntaxhighlighter": {
+            "count": syntaxhighlighter_count,
+            "languages": sorted(set(syntaxhighlighter_languages)),
+            "balanced": syntaxhighlighter_count > 0 and not syntaxhighlighter_damaged,
+            "attributes_valid": syntaxhighlighter_attributes_valid,
+        },
     }
 
 
@@ -411,7 +467,7 @@ def detect_content(content, config):
         add("CONTENT_VERY_LONG", 0, min(len(content), 240))
 
     families = set()
-    if rule_counts["SH_SHORTCODE"]:
+    if rule_counts["SH_SHORTCODE"] or rule_counts["SH_GUTENBERG_BLOCK"]:
         families.add("syntaxhighlighter")
     if rule_counts["CBP_BLOCK_COMMENT"] or rule_counts["CBP_BLOCK_CLASS"]:
         families.add("code-block-pro")

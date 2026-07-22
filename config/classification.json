@@ -8,7 +8,8 @@
     "core/embed"
   ],
   "known_third_party_blocks": [
-    "kevinbatdorf/code-block-pro"
+    "kevinbatdorf/code-block-pro",
+    "syntaxhighlighter/code"
   ],
   "known_syntaxhighlighter_shortcodes": [
     "sourcecode",

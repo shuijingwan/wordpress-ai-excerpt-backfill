@@ -13,6 +13,7 @@ def analyze_content(content: str, config: dict) -> dict:
     detection = detect_content(content, config)
     classification = classify(detection)
     risk = assess_risk(detection, classification, config)
+    syntaxhighlighter = detection["blocks"]["syntaxhighlighter"]
     return {
         "matched_rule_ids": detection["matched_rule_ids"],
         "rule_counts": detection["rule_counts"],
@@ -26,4 +27,12 @@ def analyze_content(content: str, config: dict) -> dict:
         "shortcodes": detection["shortcodes"],
         "metrics": detection["metrics"],
         "code_format_families": detection["code_format_families"],
+        "syntaxhighlighter_count": syntaxhighlighter["count"],
+        "syntaxhighlighter_languages": syntaxhighlighter["languages"],
+        "syntaxhighlighter_balanced": syntaxhighlighter["balanced"],
+        "syntaxhighlighter_attributes_valid": syntaxhighlighter["attributes_valid"],
+        "code_block_pro_count": detection["blocks"]["counts"].get(
+            "kevinbatdorf/code-block-pro", 0
+        ),
+        "mixed_code_formats": len(detection["code_format_families"]) > 1,
     }
