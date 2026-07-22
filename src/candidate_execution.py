@@ -145,8 +145,9 @@ def dry_run(manifest_rows, snapshot_by_id, protected_ids=()):
     }
 
 
-def authorize_live_selection(manifest_rows, requested_ids, batch_authorized=False):
-    validate_manifest(manifest_rows)
+def authorize_live_selection(manifest_rows, requested_ids, batch_authorized=False,
+                             expected_count=EXPECTED_CANDIDATES):
+    validate_manifest(manifest_rows, expected_count=expected_count)
     allowed = {int(row["chinese_post_id"]) for row in manifest_rows}
     requested = [int(value) for value in requested_ids]
     if not requested or len(set(requested)) != len(requested):

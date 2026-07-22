@@ -43,6 +43,35 @@ class Polylang:
 
 
 class PreflightLiveTest(unittest.TestCase):
+    def test_cli_accepts_isolated_single_manifest_with_explicit_count(self):
+        manifest_rows = rows()[:1]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "pilot.csv"
+            with manifest.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=manifest_rows[0].keys())
+                writer.writeheader(); writer.writerows(manifest_rows)
+            with mock.patch("src.wordpress_clients.WordPressRestClient", return_value=MockWp()), \
+                 mock.patch("src.polylang_ssh.PolylangSshChecker", return_value=Polylang()), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = CLI.main([
+                    "--post-id", "1", "--preflight-live", "--manifest", str(manifest),
+                    "--expected-candidate-count", "1",
+                ])
+            self.assertEqual(0, code)
+
+    def test_migration_expected_code_counts_are_checked(self):
+        row = rows()[0]
+        row["expected_code_block_pro_count"] = "1"
+        row["expected_syntaxhighlighter_count"] = "0"
+        result = preflight_live_result(row, MockWp(), Polylang(), CONFIG)
+        self.assertTrue(result["preflight_passed"])
+        self.assertEqual(1, result["structure"]["code_block_pro_count"])
+        self.assertEqual(0, result["structure"]["syntaxhighlighter_count"])
+
+        row["expected_code_block_pro_count"] = "2"
+        result = preflight_live_result(row, MockWp(), Polylang(), CONFIG)
+        self.assertFalse(result["preflight_passed"])
+
     def test_exactly_two_gets_zero_posts_and_no_sensitive_output(self):
         source = MockWp()
         transport = Transport(source.posts)

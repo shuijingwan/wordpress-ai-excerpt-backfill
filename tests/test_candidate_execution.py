@@ -62,6 +62,11 @@ class CandidateSelectionTest(unittest.TestCase):
 
 
 class SafetyBoundaryTest(unittest.TestCase):
+    def test_custom_expected_count_allows_isolated_single_manifest(self):
+        self.assertEqual(
+            [1], authorize_live_selection(manifest(1), [1], expected_count=1)
+        )
+
     def test_count_other_than_42_is_rejected(self):
         with self.assertRaisesRegex(SafetyError, "exactly 42"):
             validate_manifest(manifest(41))

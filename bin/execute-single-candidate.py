@@ -28,17 +28,22 @@ def parse_args(argv=None):
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
+    parser.add_argument("--expected-candidate-count", type=int, default=42)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUPS)
     args = parser.parse_args(argv)
     if args.resume and not args.execute:
         parser.error("--resume requires --execute")
+    if args.expected_candidate_count < 1:
+        parser.error("--expected-candidate-count must be positive")
     return args
 
 
 def main(argv=None):
     args = parse_args(argv)
     rows = load_csv(args.manifest)
-    authorize_live_selection(rows, [args.post_id])
+    authorize_live_selection(
+        rows, [args.post_id], expected_count=args.expected_candidate_count
+    )
     row = next(item for item in rows if int(item["chinese_post_id"]) == args.post_id)
     if args.preflight_live:
         # This branch imports only the GET-capable WordPress client. It does not
@@ -77,7 +82,8 @@ def main(argv=None):
         from src.glm47_excerpt_client import Glm47ExcerptClient
         glm_client = Glm47ExcerptClient()
     flow = SingleCandidateFlow(rows, wp_client, glm_client, translator_client,
-                               polylang_checker, args.backup_dir, config)
+                               polylang_checker, args.backup_dir, config,
+                               expected_candidate_count=args.expected_candidate_count)
     state = flow.execute(args.post_id, resume=args.resume)
     print(json.dumps({"chinese_post_id": args.post_id, "english_post_id": state["english_post_id"],
                       "status": state["status"]}, ensure_ascii=False, sort_keys=True))

@@ -132,6 +132,10 @@ def preflight_live_result(row, wp, polylang_checker, config):
         "language": "zh" if polylang_confirmed else None,
     }, analysis)
     block_counts = analysis["blocks"]["counts"]
+    code_block_pro_count = block_counts.get("kevinbatdorf/code-block-pro", 0)
+    syntaxhighlighter_count = analysis["syntaxhighlighter_count"]
+    expected_code_block_pro_count = row.get("expected_code_block_pro_count")
+    expected_syntaxhighlighter_count = row.get("expected_syntaxhighlighter_count")
     checks = {
         "returned_ids_match": chinese.get("id") == zh_id and english.get("id") == en_id,
         "statuses_publish": chinese.get("status") == "publish" and english.get("status") == "publish",
@@ -142,12 +146,21 @@ def preflight_live_result(row, wp, polylang_checker, config):
         "polylang_reverse_relation_confirmed": bool(
             polylang and polylang["linked_chinese_post_id"] == zh_id),
         "chinese_excerpt_empty": not zh_excerpt.strip(),
+        "chinese_title_matches": title == row["chinese_title"],
         "chinese_content_sha256_matches": sha256_text(content) == row["chinese_content_sha256"],
         "english_title_sha256_matches": sha256_text(en_title) == row["english_title_sha256"],
         "english_excerpt_sha256_matches": sha256_text(en_excerpt) == row["english_excerpt_sha256"],
         "english_content_sha256_matches": sha256_text(en_content) == row["english_content_sha256"],
         "gutenberg": analysis["blocks"]["has_block_comments"],
-        "code_block_pro": block_counts.get("kevinbatdorf/code-block-pro", 0) > 0,
+        "code_block_pro": code_block_pro_count > 0,
+        "expected_code_block_pro_count": (
+            expected_code_block_pro_count in (None, "")
+            or code_block_pro_count == int(expected_code_block_pro_count)
+        ),
+        "expected_syntaxhighlighter_count": (
+            expected_syntaxhighlighter_count in (None, "")
+            or syntaxhighlighter_count == int(expected_syntaxhighlighter_count)
+        ),
         "phase1_eligible": eligibility["eligible"],
     }
     return {
@@ -165,6 +178,7 @@ def preflight_live_result(row, wp, polylang_checker, config):
             "linked_chinese_post_id": polylang["linked_chinese_post_id"],
         } if polylang else {"error": polylang_error}),
         "chinese_excerpt_empty": checks["chinese_excerpt_empty"],
+        "chinese_title_matches": checks["chinese_title_matches"],
         "english_excerpt_empty": not en_excerpt.strip(),
         "sha256_matches": {
             "chinese_content": checks["chinese_content_sha256_matches"],
@@ -174,6 +188,12 @@ def preflight_live_result(row, wp, polylang_checker, config):
         },
         "structure": {"gutenberg": checks["gutenberg"],
                       "code_block_pro": checks["code_block_pro"],
+                      "code_block_pro_count": code_block_pro_count,
+                      "syntaxhighlighter_count": syntaxhighlighter_count,
+                      "expected_code_block_pro_count_matches":
+                          checks["expected_code_block_pro_count"],
+                      "expected_syntaxhighlighter_count_matches":
+                          checks["expected_syntaxhighlighter_count"],
                       "phase1_eligible": checks["phase1_eligible"]},
         "request_counts": {"wordpress_get": 2, "ssh_readonly": 1,
                            "post": 0, "glm": 0, "translation": 0},
@@ -182,13 +202,17 @@ def preflight_live_result(row, wp, polylang_checker, config):
 
 
 class SingleCandidateFlow:
-    def __init__(self, manifest_rows, wp, glm, translator, polylang_checker, backup_dir, config):
+    def __init__(self, manifest_rows, wp, glm, translator, polylang_checker, backup_dir, config,
+                 expected_candidate_count=42):
         self.rows = manifest_rows; self.wp = wp; self.glm = glm; self.translator = translator
         self.polylang_checker = polylang_checker
         self.backup_dir = Path(backup_dir); self.config = config
+        self.expected_candidate_count = expected_candidate_count
 
     def _row(self, post_id):
-        authorize_live_selection(self.rows, [post_id])
+        authorize_live_selection(
+            self.rows, [post_id], expected_count=self.expected_candidate_count
+        )
         return next(row for row in self.rows if int(row["chinese_post_id"]) == int(post_id))
 
     def _state_path(self, post_id):
