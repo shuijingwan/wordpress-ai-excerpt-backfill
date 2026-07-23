@@ -234,6 +234,25 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             path, MODULE.EXECUTION_MANIFEST_FIELDS, [row])
         return path
 
+    def prepare_blocked_run(self, post_id=401):
+        self.prepare_converted()
+        path = self.write_record_validation(
+            chinese=post_id, english=post_id + 1000)
+        MODULE.record_validation(
+            self.root, post_id, str(path.relative_to(self.root)))
+        self.create_execution_manifest(post_id)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", post_id)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        attempt = MODULE._record_attempt_start(self.root, state, "run")
+        MODULE._block_after_operation_error(
+            self.root, state, "run", attempt, {
+                "category": "executor_failed_without_state",
+                "returncode": 1, "stderr_summary": "safe error",
+                "stdout_summary": "",
+            })
+        return state_path
+
     def prepare_init_fixture(self):
         self.write_execution(100, 1100)
         self.write_execution(200, 1200)
@@ -860,7 +879,14 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         def runner(command, **kwargs):
             self.assertIn("execute-single-candidate.py", command[1])
+            state = json.loads(MODULE._state_path(
+                self.root, "syntaxhighlighter-20260723-01", 401
+            ).read_text(encoding="utf-8"))
+            if "--preflight-live" in command:
+                self.assertEqual("ready_for_execution", state["workflow_status"])
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
             self.assertIn("--execute", command)
+            self.assertEqual("execution_in_progress", state["workflow_status"])
             self.write_execution(401, 1401, "completed")
             return mock.Mock(returncode=0, stdout="{}", stderr="")
 
@@ -887,6 +913,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         def runner(command, **kwargs):
             post_id = int(command[command.index("--post-id") + 1])
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
             status = "excerpt_rejected" if post_id == 401 else "completed"
             self.write_execution(post_id, post_id + 1000, status)
             return mock.Mock(returncode=2 if post_id == 401 else 0,
@@ -920,11 +948,13 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             post_id = int(command[command.index("--post-id") + 1])
             if post_id == 401:
                 raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
             self.write_execution(402, 1402, "completed")
             return mock.Mock(returncode=0, stdout="{}", stderr="")
 
         result = MODULE.run_ready(self.root, execute=True, runner=runner)
-        self.assertEqual(["blocked", "completed"],
+        self.assertEqual(["operation_error", "completed"],
                          [item["result"] for item in result["results"]])
         states = [
             json.loads(MODULE._state_path(
@@ -932,7 +962,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             ).read_text(encoding="utf-8"))["workflow_status"]
             for post_id in (401, 402)
         ]
-        self.assertEqual(["blocked", "completed"], states)
+        self.assertEqual(["ready_for_execution", "completed"], states)
 
     def test_sync_execution_preview_apply_and_identity_conflict(self):
         self.prepare_init_fixture()
@@ -1027,6 +1057,183 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 MODULE.validate_live(self.root, 401)
             with self.assertRaisesRegex(MODULE.ReadError, "lock is already held"):
                 MODULE.run_ready(self.root, execute=True)
+
+    def test_preflight_failure_is_observable_safe_and_does_not_start_attempt(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            state = json.loads(MODULE._state_path(
+                self.root, "syntaxhighlighter-20260723-01", 401
+            ).read_text(encoding="utf-8"))
+            self.assertEqual("ready_for_execution", state["workflow_status"])
+            return mock.Mock(
+                returncode=1, stdout="diagnostic token=visible-secret",
+                stderr=(
+                    "HttpJsonError: network request failed: URLError "
+                    "SSLEOFError UNEXPECTED_EOF_WHILE_READING "
+                    "Authorization: Bearer abc Cookie=session-value"))
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        item = result["results"][0]
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(1, len(calls))
+        self.assertIn("--preflight-live", calls[0])
+        self.assertEqual("operation_error", item["result"])
+        self.assertEqual("transient_network_error", item["category"])
+        self.assertNotIn("abc", item["stderr_summary"])
+        self.assertNotIn("visible-secret", item["stdout_summary"])
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual({}, state["retry_counts"])
+
+    def test_non_network_preflight_exit_is_not_transient(self):
+        failure = MODULE._classify_subprocess_failure(
+            mock.Mock(returncode=1, stderr="manifest rejected", stdout=""),
+            "preflight")
+        self.assertEqual("preflight_failed", failure["category"])
+        auth = MODULE._classify_subprocess_failure(
+            mock.Mock(returncode=1, stderr="HTTP Error 401: Unauthorized", stdout=""),
+            "preflight")
+        self.assertEqual("authentication_error", auth["category"])
+
+    def test_execute_transient_without_artifacts_returns_ready_and_keeps_attempt(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            return mock.Mock(
+                returncode=1, stdout="",
+                stderr="URLError: network request failed SSLEOFError")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(2, len(calls))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual(1, state["retry_counts"]["run"])
+        self.assertTrue(result["results"][0]["recovered_to_ready"])
+
+    def test_execute_nontransient_or_backup_blocks(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            backup = (self.root / "data/backups/single-candidate/"
+                      "chinese-401.pre-write.json")
+            backup.write_text("{}", encoding="utf-8")
+            return mock.Mock(
+                returncode=1, stdout="", stderr="URLError network request failed")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        self.assertIn("pre-write", result["results"][0]["artifacts"][0])
+
+    def test_invalid_execution_state_has_distinct_classification(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, raw="{bad")
+            return mock.Mock(returncode=1, stdout="", stderr="executor failed")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        self.assertEqual(
+            "executor_state_invalid", result["results"][0]["category"])
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+
+    def test_recover_blocked_preview_apply_and_idempotency(self):
+        state_path = self.prepare_blocked_run()
+        before = self.snapshot()
+        preview = MODULE.recover_blocked(self.root, 401)
+        self.assertTrue(preview["eligible"])
+        self.assertFalse(preview["changed"])
+        self.assertEqual(before, self.snapshot())
+        applied = MODULE.recover_blocked(self.root, 401, apply=True)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        events_before = MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01").read_bytes()
+        repeated = MODULE.recover_blocked(self.root, 401, apply=True)
+        self.assertTrue(applied["changed"])
+        self.assertFalse(repeated["changed"])
+        self.assertTrue(repeated["already_recovered"])
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual(1, state["retry_counts"]["run"])
+        self.assertIn("last_failure", state)
+        self.assertEqual(events_before, MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01").read_bytes())
+
+    def test_recover_blocked_rejects_artifacts_validation_drift_and_limit(self):
+        state_path = self.prepare_blocked_run()
+        backup = (self.root / "data/backups/single-candidate/"
+                  "chinese-401.pre-write.json")
+        backup.write_text("{}", encoding="utf-8")
+        self.assertFalse(MODULE.recover_blocked(self.root, 401)["eligible"])
+        backup.unlink()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["retry_counts"]["run"] = MODULE.MAX_RUN_ATTEMPTS
+        MODULE._atomic_write_json(state_path, state)
+        self.assertIn(
+            "run retry limit exhausted",
+            MODULE.recover_blocked(self.root, 401)["blocking_reasons"])
+        state["retry_counts"]["run"] = 1
+        MODULE._atomic_write_json(state_path, state)
+        validation = self.root / state["validation_evidence"]["source_file"]
+        validation.write_text("drift", encoding="utf-8")
+        self.assertTrue(any(
+            "SHA-256 drift" in reason
+            for reason in MODULE.recover_blocked(
+                self.root, 401)["blocking_reasons"]))
+
+    def test_recover_blocked_rejects_execution_and_completed(self):
+        state_path = self.prepare_blocked_run()
+        self.write_execution(401, 1401, "completed")
+        self.assertFalse(MODULE.recover_blocked(self.root, 401)["eligible"])
+        self.write_execution(401, 1401, raw=None)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        self.assertFalse(MODULE.recover_blocked(self.root, 401)["eligible"])
+
+    def test_recover_blocked_json_is_valid(self):
+        self.prepare_blocked_run()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([
+                "recover-blocked", "--post-id", "401", "--json",
+                "--repo-root", str(self.root)])
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertTrue(json.loads(output.getvalue())["eligible"])
 
 
 if __name__ == "__main__":
