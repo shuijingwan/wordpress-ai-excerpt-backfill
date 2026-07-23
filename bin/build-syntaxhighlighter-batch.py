@@ -6,6 +6,7 @@ import csv
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 import tempfile
 
 
@@ -25,6 +26,9 @@ REQUIRED_PREVIEW_FIELDS = {
 }
 EDIT_URL = "https://admin.shuijingwanwq.com/wp-admin/post.php?post={}&action=edit"
 BATCH_PATTERN = "syntaxhighlighter-migration-batch-*.csv"
+FIXED_BATCH_NAME = re.compile(
+    r"^syntaxhighlighter-migration-batch-\d{8}-\d{2}\.csv$"
+)
 
 
 class BatchError(ValueError):
@@ -35,14 +39,27 @@ def _true(value):
     return str(value).strip().lower() == "true"
 
 
-def _read_csv(path, required=()):
-    with Path(path).open(encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        fields = set(reader.fieldnames or ())
-        missing = set(required) - fields
-        if missing:
-            raise BatchError(f"{path}: missing fields: {', '.join(sorted(missing))}")
-        return list(reader)
+def _read_csv(path, required=(), require_rows=False):
+    path = Path(path)
+    try:
+        if path.stat().st_size == 0:
+            raise BatchError(f"{path}: CSV file is empty")
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, strict=True)
+            fields = set(reader.fieldnames or ())
+            missing = set(required) - fields
+            if missing:
+                raise BatchError(
+                    f"{path}: missing fields: {', '.join(sorted(missing))}"
+                )
+            rows = list(reader)
+    except BatchError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as error:
+        raise BatchError(f"{path}: unable to read CSV: {error}") from error
+    if require_rows and not rows:
+        raise BatchError(f"{path}: fixed batch has no data rows")
+    return rows
 
 
 def _ids(path):
@@ -67,7 +84,15 @@ def _eligible(row):
 
 def _existing_batches(output):
     output = Path(output)
-    return sorted(path for path in output.parent.glob(BATCH_PATTERN) if path != output)
+    paths = []
+    for path in output.parent.glob(BATCH_PATTERN):
+        if path == output:
+            continue
+        if not FIXED_BATCH_NAME.fullmatch(path.name):
+            continue
+        _read_csv(path, FIELDS, require_rows=True)
+        paths.append(path)
+    return sorted(paths)
 
 
 def _allocated_ids_and_next_sequence(paths):
@@ -115,10 +140,7 @@ def build_batch(preview_path, output_path, expected_count, batch_id, pilot_manif
     excluded_batches = eligible_ids & batch_ids
     excluded = pilot_ids | old_ids | batch_ids
     available = [row for row in eligible_rows if int(row["chinese_post_id"]) not in excluded]
-    # Count is ascending, while date and ID are descending.
-    available.sort(key=lambda row: int(row["chinese_post_id"]), reverse=True)
-    available.sort(key=lambda row: row["published_at"], reverse=True)
-    available.sort(key=lambda row: int(row["syntaxhighlighter_count"]))
+    available.sort(key=lambda row: (row["published_at"], int(row["chinese_post_id"])))
     if len(available) < expected_count:
         raise BatchError(
             f"not enough eligible unallocated candidates: expected {expected_count}, found {len(available)}"

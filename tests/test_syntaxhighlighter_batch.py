@@ -36,6 +36,31 @@ def row(post_id, **changes):
     return value
 
 
+def fixed_batch_row(post_id, sequence=1, **changes):
+    value = {
+        "schema_version": 1,
+        "batch_id": f"syntaxhighlighter-2026072{sequence}-01",
+        "batch_sequence": sequence,
+        "allocated_at": f"2026-07-2{sequence}T00:00:00+00:00",
+        "chinese_post_id": post_id,
+        "english_post_id": post_id + 1000,
+        "chinese_title": f"固定标题 {post_id}",
+        "published_at": "2026-01-01 00:00:00",
+        "edit_url": f"https://example.invalid/wp-admin/post.php?post={post_id}",
+        "permalink": f"https://example.invalid/{post_id}/",
+        "before_content_sha256": f"{post_id:064x}",
+        "before_syntaxhighlighter_count": 1,
+        "before_code_block_pro_count": 0,
+        "expected_syntaxhighlighter_count_after": 0,
+        "expected_code_block_pro_count_after": 1,
+        "migration_status": "pending",
+        "validation_status": "not-checked",
+        "validation_reasons": "",
+    }
+    value.update(changes)
+    return value
+
+
 class SyntaxHighlighterBatchTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -70,11 +95,7 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
         rows = [row(value, syntaxhighlighter_count=str(1 + value % 3)) for value in range(1, 26)]
         first, stats = self.build(rows)
         expected_ids = [int(item["chinese_post_id"]) for item in sorted(
-            rows, key=lambda item: (
-                int(item["syntaxhighlighter_count"]),
-                -int(item["published_at"].replace("-", "").replace(":", "").replace(" ", "")),
-                -int(item["chinese_post_id"]),
-            ),
+            rows, key=lambda item: (item["published_at"], int(item["chinese_post_id"])),
         )[:20]]
         self.assertEqual(expected_ids, [item["chinese_post_id"] for item in first])
         self.assertEqual(20, len(first)); self.assertEqual(5, stats["remaining_unallocated_ready"])
@@ -87,8 +108,8 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
     def test_pilot_old_and_existing_batch_ids_are_excluded(self):
         rows = [row(value) for value in range(1, 25)]
         self.id_file(self.pilot, [1]); self.id_file(self.old, [2])
-        existing = self.root / "syntaxhighlighter-migration-batch-existing.csv"
-        self.write(existing, [{"chinese_post_id": 3, "batch_sequence": 1}])
+        existing = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        self.write(existing, [fixed_batch_row(3)], MODULE.FIELDS)
         selected, stats = self.build(rows)
         ids = {item["chinese_post_id"] for item in selected}
         self.assertFalse({1, 2, 3} & ids)
@@ -96,6 +117,69 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
         self.assertEqual(1, stats["excluded_old_count"])
         self.assertEqual(1, stats["excluded_existing_batch_count"])
         self.assertTrue(all(item["batch_sequence"] == 2 for item in selected))
+
+    def test_derived_validation_and_execution_candidates_are_ignored(self):
+        rows = [row(value) for value in range(1, 23)]
+        validation = (
+            self.root
+            / "syntaxhighlighter-migration-batch-20260722-01-validation.csv"
+        )
+        execution = (
+            self.root
+            / "syntaxhighlighter-migration-batch-20260722-01-execution-candidates.csv"
+        )
+        self.write(validation, [{
+            "chinese_post_id": 1, "batch_sequence": 99, "validated_at": "now",
+        }])
+        self.write(execution, [{
+            "chinese_post_id": 2, "batch_sequence": 99,
+        }])
+        selected, stats = self.build(rows)
+        ids = {item["chinese_post_id"] for item in selected}
+        self.assertIn(1, ids)
+        self.assertIn(2, ids)
+        self.assertEqual(0, stats["excluded_existing_batch_count"])
+        self.assertTrue(all(item["batch_sequence"] == 1 for item in selected))
+
+    def test_multiple_formal_batches_are_all_excluded(self):
+        rows = [row(value) for value in range(1, 25)]
+        first = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        second = self.root / "syntaxhighlighter-migration-batch-20260722-01.csv"
+        self.write(first, [fixed_batch_row(1, sequence=1)], MODULE.FIELDS)
+        self.write(second, [fixed_batch_row(2, sequence=2)], MODULE.FIELDS)
+        selected, stats = self.build(rows)
+        ids = {item["chinese_post_id"] for item in selected}
+        self.assertFalse({1, 2} & ids)
+        self.assertEqual(2, stats["excluded_existing_batch_count"])
+        self.assertTrue(all(item["batch_sequence"] == 3 for item in selected))
+
+    def test_empty_formal_batch_reports_batch_error_with_path(self):
+        path = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        path.write_bytes(b"")
+        with self.assertRaisesRegex(
+                MODULE.BatchError, rf"{path}.*CSV file is empty"):
+            self.build([row(value) for value in range(1, 21)])
+
+    def test_header_only_formal_batch_reports_no_data_rows(self):
+        path = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        self.write(path, [], MODULE.FIELDS)
+        with self.assertRaisesRegex(
+                MODULE.BatchError, rf"{path}.*no data rows"):
+            self.build([row(value) for value in range(1, 21)])
+
+    def test_incomplete_header_only_formal_batch_reports_missing_fields(self):
+        path = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        self.write(path, [], ["chinese_post_id", "batch_sequence"])
+        with self.assertRaisesRegex(
+                MODULE.BatchError, rf"{path}.*missing fields"):
+            self.build([row(value) for value in range(1, 21)])
+
+    def test_formal_batch_data_with_missing_fields_reports_batch_error(self):
+        path = self.root / "syntaxhighlighter-migration-batch-20260721-01.csv"
+        self.write(path, [{"chinese_post_id": 1, "batch_sequence": 1}])
+        with self.assertRaisesRegex(
+                MODULE.BatchError, rf"{path}.*missing fields"):
+            self.build([row(value) for value in range(1, 21)])
 
     def test_ineligible_rows_never_fill_expected_count(self):
         invalid = [
