@@ -28,6 +28,7 @@ EVENT_SCHEMA_VERSION = 1
 INIT_EVENT_TYPE = "coordination_state_initialized"
 COORDINATION_STATUSES = {
     "awaiting_manual_conversion", "awaiting_manual_review", "awaiting_validation",
+    "awaiting_readonly_validation", "ready_for_execution",
     "validation_failed", "ready_for_excerpt", "excerpt_failed",
     "ready_for_translation_resume", "translation_failed", "completed", "blocked",
     "paused",
@@ -58,6 +59,15 @@ MANIFEST_FIELDS = {
 }
 VALIDATION_FIELDS = {
     "batch_id", "chinese_post_id", "english_post_id", "validation_status",
+}
+RECORD_VALIDATION_FIELDS = {
+    "batch_id", "chinese_post_id", "english_post_id",
+    "before_content_sha256", "after_content_sha256",
+    "before_syntaxhighlighter_count", "after_syntaxhighlighter_count",
+    "before_code_block_pro_count", "expected_code_block_pro_count_after",
+    "after_code_block_pro_count", "chinese_excerpt_empty", "chinese_status",
+    "chinese_language", "english_status", "polylang_relation_status",
+    "gutenberg_balanced", "validation_status", "validation_reasons",
 }
 EXECUTION_CANDIDATE_FIELDS = {
     "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
@@ -1113,6 +1123,441 @@ def build_status(root):
     return result
 
 
+def _context(root):
+    root = Path(root).resolve()
+    errors = []
+    conflicts = []
+    batches = discover_batches(root, errors)
+    fixed = validate_batch_index(batches, conflicts, errors)
+    executions = read_execution_states(root, errors)
+    coordination = read_coordination_states(root, batches, errors)
+    if errors or conflicts or coordination["batch_drift"]:
+        raise ReadError(
+            "repository integrity check failed: "
+            + "; ".join(errors or ["conflict or fixed batch drift detected"])
+        )
+    return root, batches, fixed, executions, coordination["states"]
+
+
+def _latest_coordination_batch(batches, states):
+    incomplete = []
+    for batch in batches:
+        values = [states.get(item["chinese_post_id"]) for item in batch["articles"]]
+        if any(value is None or value["workflow_status"] != "completed"
+               for value in values):
+            incomplete.append(batch)
+    if not incomplete:
+        return None
+    if any(item["batch_sequence"] is None or not item["allocated_at"]
+           for item in incomplete):
+        raise ReadError("latest incomplete batch cannot be determined reliably")
+    return max(incomplete, key=lambda item: (
+        item["allocated_at"], item["batch_sequence"], item["batch_id"]))
+
+
+def show_current(root):
+    root, batches, _, executions, states = _context(root)
+    batch = _latest_coordination_batch(batches, states)
+    if batch is None:
+        return {
+            "schema_version": SCHEMA_VERSION, "repository_root": str(root),
+            "all_completed": True, "batch_id": None, "articles": [],
+            "integrity_ok": True,
+        }
+    articles = []
+    for article in batch["articles"]:
+        state = states.get(article["chinese_post_id"])
+        execution = executions.get(article["chinese_post_id"])
+        articles.append({
+            "position": article["batch_position"],
+            "chinese_post_id": article["chinese_post_id"],
+            "english_post_id": article["english_post_id"],
+            "title": article["title"],
+            "published_at": article["published_at"],
+            "workflow_status": state["workflow_status"] if state else "uninitialized",
+            "syntax_count_before": int(
+                article["source_row"].get("before_syntaxhighlighter_count") or 0),
+            "manual_conversion_confirmed": bool(
+                state and state.get("manual_conversion", {}).get("status")
+                == "confirmed"),
+            "language_review_confirmed": bool(
+                state and state.get("language_review", {}).get("status")
+                == "confirmed"),
+            "validation_status": (
+                state.get("validation_evidence", {}).get("status")
+                if state and state.get("validation_evidence")
+                else "not_recorded"),
+            "execution_status": execution["status"] if execution else "not_recorded",
+        })
+    return {
+        "schema_version": SCHEMA_VERSION, "repository_root": str(root),
+        "all_completed": False, "batch_id": batch["batch_id"],
+        "source_file": batch["source_file"], "articles": articles,
+        "integrity_ok": True,
+    }
+
+
+def _transition_event(event_type, state, previous, new, reason, evidence,
+                      timestamp, identity):
+    raw = (
+        f"{event_type}|{state['batch_id']}|{state['chinese_post_id']}|{identity}"
+    ).encode("utf-8")
+    return {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "event_id": _sha256_bytes(raw),
+        "event_type": event_type,
+        "occurred_at": timestamp,
+        "batch_id": state["batch_id"],
+        "chinese_post_id": state["chinese_post_id"],
+        "previous_status": previous,
+        "new_status": new,
+        "reason": reason,
+        "evidence": evidence,
+        "legacy_import": state["legacy_import"],
+    }
+
+
+def _persist_transition(root, state_path, state, event):
+    events_path = _events_path(root, state["batch_id"])
+    events = _read_events(events_path)
+    if event["event_id"] not in {item["event_id"] for item in events}:
+        _atomic_write_events(events_path, events + [event])
+    _atomic_write_json(state_path, state)
+
+
+def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
+                   language_review_confirmed):
+    if not language_review_confirmed:
+        raise ReadError("--language-review-confirmed is required")
+    if syntax_count_before < 1 or cbp_count_after < 1:
+        raise ReadError("code block counts must be positive")
+    with InitLock(Path(root).resolve()):
+        root, batches, fixed, _, states = _context(root)
+        article = fixed.get(int(post_id))
+        if article is None:
+            raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+        batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
+        if batch["source_type"] != "syntaxhighlighter_daily":
+            raise ReadError("mark-converted only accepts SyntaxHighlighter daily batches")
+        state = states.get(int(post_id))
+        if state is None:
+            raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+        expected = int(article["source_row"]["before_syntaxhighlighter_count"])
+        if syntax_count_before != expected:
+            raise ReadError(
+                f"syntax-count-before mismatch: expected {expected}, got "
+                f"{syntax_count_before}")
+        if cbp_count_after != syntax_count_before:
+            raise ReadError("cbp-count-after must equal syntax-count-before")
+        if state["workflow_status"] == "awaiting_readonly_validation":
+            same = (
+                state.get("manual_conversion", {}).get("status") == "confirmed"
+                and state["manual_conversion"].get("syntax_count_before")
+                == syntax_count_before
+                and state["manual_conversion"].get("cbp_count_after")
+                == cbp_count_after
+                and state.get("language_review", {}).get("status") == "confirmed"
+            )
+            if same:
+                return {
+                    "schema_version": SCHEMA_VERSION, "changed": False,
+                    "workflow_status": state["workflow_status"],
+                    "chinese_post_id": int(post_id), "integrity_ok": True,
+                }
+        if state["workflow_status"] != "awaiting_manual_conversion":
+            raise ReadError(f"cannot mark converted from {state['workflow_status']}")
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        state["workflow_status"] = "awaiting_readonly_validation"
+        state["manual_conversion"] = {
+            "status": "confirmed", "confirmed_at": timestamp,
+            "syntax_count_before": syntax_count_before,
+            "cbp_count_after": cbp_count_after,
+        }
+        state["language_review"] = {
+            "status": "confirmed", "confirmed_at": timestamp,
+        }
+        state["updated_at"] = timestamp
+        evidence = {
+            "syntax_count_before": syntax_count_before,
+            "cbp_count_after": cbp_count_after,
+            "language_review_confirmed": True,
+        }
+        event = _transition_event(
+            "manual_conversion_and_language_review_confirmed", state,
+            previous, state["workflow_status"],
+            "manual conversion and per-block language review explicitly confirmed",
+            evidence, timestamp,
+            f"{syntax_count_before}|{cbp_count_after}|language-confirmed",
+        )
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+        return {
+            "schema_version": SCHEMA_VERSION, "changed": True,
+            "workflow_status": state["workflow_status"],
+            "chinese_post_id": int(post_id), "integrity_ok": True,
+        }
+
+
+def _safe_repository_path(root, value):
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ReadError("validation-file must be a safe repository-relative path")
+    resolved = (root / candidate).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise ReadError("validation-file escapes repository root") from error
+    if not resolved.is_file():
+        raise ReadError(f"validation file does not exist: {value}")
+    return resolved
+
+
+def _true_field(row, field):
+    value = str(row.get(field, "")).strip().lower()
+    if value not in {"true", "false"}:
+        raise ReadError(f"validation field {field} must be True or False")
+    return value == "true"
+
+
+def _valid_sha256(value):
+    return (
+        isinstance(value, str) and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validation_int(row, field, path):
+    try:
+        return int(row[field])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ReadError(
+            f"{path}: validation field {field} must be an integer") from error
+
+
+def _validation_text(row, field, path):
+    value = row.get(field)
+    if not isinstance(value, str):
+        raise ReadError(f"{path}: validation field {field} must be text")
+    return value.strip()
+
+
+def _validation_result(path, batch, article, state):
+    rows, fields = _read_csv(path)
+    _required(fields, RECORD_VALIDATION_FIELDS, path)
+    matching = [
+        row for row in rows
+        if isinstance(row.get("chinese_post_id"), str)
+        and row["chinese_post_id"].strip()
+        == str(article["chinese_post_id"])
+    ]
+    if len(matching) != 1:
+        raise ReadError(
+            f"{path}: expected exactly one row for Chinese post "
+            f"{article['chinese_post_id']}")
+    row = matching[0]
+    if _validation_text(row, "batch_id", path) != batch["batch_id"]:
+        raise ReadError(f"{path}: validation batch_id mismatch")
+    if _positive_id(row, "english_post_id", path, 1) != article["english_post_id"]:
+        raise ReadError(f"{path}: validation English post ID mismatch")
+    if (_validation_text(row, "before_content_sha256", path)
+            != article["source_row"]["before_content_sha256"]):
+        raise ReadError(f"{path}: validation before content SHA-256 mismatch")
+    after_sha256 = _validation_text(row, "after_content_sha256", path)
+    if not _valid_sha256(after_sha256):
+        raise ReadError(f"{path}: invalid after_content_sha256")
+    expected_cbp = state["manual_conversion"]["cbp_count_after"]
+    if _validation_int(
+            row, "expected_code_block_pro_count_after", path) != expected_cbp:
+        raise ReadError(f"{path}: validation expected Code Block Pro count mismatch")
+    validation_reasons = _validation_text(
+        row, "validation_reasons", path)
+    checks = {
+        "syntaxhighlighter_zero":
+            _validation_int(row, "after_syntaxhighlighter_count", path) == 0,
+        "code_block_pro_count":
+            _validation_int(row, "after_code_block_pro_count", path)
+            == expected_cbp,
+        "unknown_code_formats_zero":
+            "unexpected-code-format:" not in validation_reasons,
+        "polylang_relation_normal":
+            _validation_text(row, "polylang_relation_status", path) == "normal",
+        "chinese_excerpt_empty": _true_field(row, "chinese_excerpt_empty"),
+        "chinese_publish":
+            _validation_text(row, "chinese_status", path) == "publish",
+        "chinese_language":
+            _validation_text(row, "chinese_language", path) == "zh",
+        "english_publish":
+            _validation_text(row, "english_status", path) == "publish",
+        "gutenberg_balanced": _true_field(row, "gutenberg_balanced"),
+        "before_syntax_count":
+            _validation_int(row, "before_syntaxhighlighter_count", path)
+            == int(article["source_row"]["before_syntaxhighlighter_count"]),
+        "before_cbp_count":
+            _validation_int(row, "before_code_block_pro_count", path)
+            == int(article["source_row"]["before_code_block_pro_count"]),
+        "manual_cbp_count":
+            _validation_int(row, "after_code_block_pro_count", path)
+            == state["manual_conversion"]["cbp_count_after"],
+    }
+    status = _validation_text(row, "validation_status", path)
+    if status not in {"ready", "pending", "abnormal"}:
+        raise ReadError(f"{path}: unknown validation_status {status!r}")
+    failure_reasons = [name for name, value in checks.items() if not value]
+    if status != "ready":
+        failure_reasons.extend(
+            item for item in validation_reasons.split("|") if item)
+    passed = status == "ready" and not failure_reasons
+    return row, passed, sorted(set(failure_reasons)), checks
+
+
+def record_validation(root, post_id, validation_file):
+    with InitLock(Path(root).resolve()):
+        root, batches, fixed, _, states = _context(root)
+        article = fixed.get(int(post_id))
+        if article is None:
+            raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+        state = states.get(int(post_id))
+        if state is None:
+            raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+        path = _safe_repository_path(root, validation_file)
+        digest = _file_sha256(path)
+        existing = state.get("validation_evidence")
+        if state["workflow_status"] in {"ready_for_execution", "validation_failed"}:
+            if existing and existing.get("sha256") == digest:
+                return {
+                    "schema_version": SCHEMA_VERSION, "changed": False,
+                    "workflow_status": state["workflow_status"],
+                    "chinese_post_id": int(post_id), "integrity_ok": True,
+                }
+        if state["workflow_status"] != "awaiting_readonly_validation":
+            raise ReadError(
+                f"cannot record validation from {state['workflow_status']}")
+        batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
+        row, passed, reasons, checks = _validation_result(
+            path, batch, article, state)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        new_status = "ready_for_execution" if passed else "validation_failed"
+        evidence = {
+            "source_file": _relative(path, root),
+            "sha256": digest,
+            "status": row["validation_status"],
+            "validated_at": row.get("validated_at") or None,
+            "after_content_sha256": row["after_content_sha256"],
+            "checks": checks,
+            "failure_reasons": reasons,
+        }
+        state["workflow_status"] = new_status
+        state["validation_evidence"] = evidence
+        state["validation_failure_reasons"] = reasons
+        state["updated_at"] = timestamp
+        event = _transition_event(
+            "readonly_validation_recorded", state, previous, new_status,
+            "read-only validation passed" if passed
+            else "read-only validation failed",
+            evidence, timestamp, digest,
+        )
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+        return {
+            "schema_version": SCHEMA_VERSION, "changed": True,
+            "workflow_status": new_status, "validation_passed": passed,
+            "failure_reasons": reasons, "chinese_post_id": int(post_id),
+            "integrity_ok": True,
+        }
+
+
+def plan_run(root):
+    root, batches, _, executions, states = _context(root)
+    plans = []
+    for batch in batches:
+        for article in batch["articles"]:
+            state = states.get(article["chinese_post_id"])
+            if not state or state["workflow_status"] != "ready_for_execution":
+                continue
+            execution = executions.get(article["chinese_post_id"])
+            reasons = []
+            if execution is not None:
+                reasons.append(
+                    "completed execution evidence already exists"
+                    if execution["status"] == "completed"
+                    else f"unsafe existing execution status: {execution['status']}")
+            plans.append({
+                "batch_id": batch["batch_id"],
+                "post_id": article["chinese_post_id"],
+                "english_post_id": article["english_post_id"],
+                "execution_candidate_path": (
+                    f"data/analysis/syntaxhighlighter-migration-batch-"
+                    f"{batch['batch_id'].removeprefix('syntaxhighlighter-')}"
+                    "-execution-candidates.csv"
+                ),
+                "future_arguments": [
+                    "--post-id", str(article["chinese_post_id"]), "--execute"],
+                "validation_evidence": state.get("validation_evidence"),
+                "execution_evidence": execution,
+                "allowed": execution is None,
+                "blocking_reasons": reasons,
+            })
+    return {
+        "schema_version": SCHEMA_VERSION, "repository_root": str(root),
+        "planned_count": len(plans),
+        "allowed_count": sum(item["allowed"] for item in plans),
+        "items": plans, "writes_performed": False, "integrity_ok": True,
+    }
+
+
+SUMMARY_KEYS = (
+    "awaiting_manual_conversion", "awaiting_readonly_validation",
+    "validation_failed", "ready_for_execution", "execution_in_progress",
+    "execution_failed", "completed", "blocked",
+)
+
+
+def _summary_bucket(status):
+    if status in SUMMARY_KEYS:
+        return status
+    if status == "ready_for_translation_resume":
+        return "execution_in_progress"
+    if status in {"excerpt_failed", "translation_failed"}:
+        return "execution_failed"
+    return "blocked"
+
+
+def summary(root):
+    root, batches, _, _, states = _context(root)
+    results = []
+    for batch in batches:
+        counts = Counter({key: 0 for key in SUMMARY_KEYS})
+        for article in batch["articles"]:
+            state = states.get(article["chinese_post_id"])
+            counts[_summary_bucket(
+                state["workflow_status"] if state else "blocked")] += 1
+        total = len(batch["articles"])
+        pending = total - counts["completed"]
+        results.append({
+            "batch_id": batch["batch_id"], "source_file": batch["source_file"],
+            "total": total, **dict(counts), "pending": pending,
+            "terminal": pending == 0,
+        })
+    latest = _latest_coordination_batch(batches, states)
+    can_create = latest is None
+    return {
+        "schema_version": SCHEMA_VERSION, "repository_root": str(root),
+        "batches": results,
+        "totals": {
+            key: sum(item[key] for item in results)
+            for key in ("total",) + SUMMARY_KEYS + ("pending",)
+        },
+        "latest_incomplete_batch": latest["batch_id"] if latest else None,
+        "can_create_next_batch": can_create,
+        "recommendation": (
+            "all batches complete" if can_create
+            else "continue latest incomplete batch; do not create a new batch"),
+        "writes_performed": False, "integrity_ok": True,
+    }
+
+
 def render_text(result):
     counts = result["execution_counts"]
     lines = [
@@ -1219,6 +1664,65 @@ def render_init_text(result):
     return "\n".join(lines)
 
 
+def render_current_text(result):
+    if result["all_completed"]:
+        return "全部固定批次均已完成"
+    lines = [
+        f"最新未完成批次: {result['batch_id']}",
+        f"文章数: {len(result['articles'])}",
+    ]
+    for item in result["articles"]:
+        lines.append(
+            f"{item['position']:02d}. zh={item['chinese_post_id']} "
+            f"en={item['english_post_id']} | {item['published_at']} | "
+            f"{item['workflow_status']} | SH={item['syntax_count_before']} | "
+            f"converted={item['manual_conversion_confirmed']} "
+            f"languages={item['language_review_confirmed']} "
+            f"validation={item['validation_status']} "
+            f"execution={item['execution_status']} | {item['title']}"
+        )
+    return "\n".join(lines)
+
+
+def render_summary_text(result):
+    lines = [
+        "批次汇总:",
+    ]
+    for item in result["batches"]:
+        lines.append(
+            f"- {item['batch_id']}: total={item['total']} "
+            f"manual={item['awaiting_manual_conversion']} "
+            f"validation={item['awaiting_readonly_validation']} "
+            f"validation_failed={item['validation_failed']} "
+            f"ready={item['ready_for_execution']} "
+            f"in_progress={item['execution_in_progress']} "
+            f"execution_failed={item['execution_failed']} "
+            f"completed={item['completed']} blocked={item['blocked']} "
+            f"pending={item['pending']}"
+        )
+    lines.extend([
+        f"最新未完成批次: {result['latest_incomplete_batch'] or '无'}",
+        f"建议创建下一批: {result['can_create_next_batch']}",
+        f"建议: {result['recommendation']}",
+    ])
+    return "\n".join(lines)
+
+
+def render_plan_text(result):
+    lines = [
+        f"执行计划: planned={result['planned_count']} "
+        f"allowed={result['allowed_count']}",
+    ]
+    for item in result["items"]:
+        lines.append(
+            f"- {item['batch_id']} zh={item['post_id']} "
+            f"en={item['english_post_id']} allowed={item['allowed']} "
+            f"blocked={';'.join(item['blocking_reasons']) or '-'}"
+        )
+    lines.append("生产调用: 0")
+    return "\n".join(lines)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Read-only historical article migration status")
@@ -1233,24 +1737,75 @@ def parse_args(argv=None):
     init.add_argument("--json", action="store_true", dest="json_output")
     init.add_argument("--repo-root", type=Path, default=repository_root(),
                       help=argparse.SUPPRESS)
+    current = subparsers.add_parser(
+        "show-current", help="show the latest incomplete fixed batch")
+    current.add_argument("--json", action="store_true", dest="json_output")
+    current.add_argument("--repo-root", type=Path, default=repository_root(),
+                         help=argparse.SUPPRESS)
+    converted = subparsers.add_parser(
+        "mark-converted", help="confirm manual conversion and language review")
+    converted.add_argument("--post-id", required=True, type=int)
+    converted.add_argument("--syntax-count-before", required=True, type=int)
+    converted.add_argument("--cbp-count-after", required=True, type=int)
+    converted.add_argument("--language-review-confirmed", required=True,
+                           action="store_true")
+    converted.add_argument("--repo-root", type=Path, default=repository_root(),
+                           help=argparse.SUPPRESS)
+    validation = subparsers.add_parser(
+        "record-validation", help="record an existing read-only validation file")
+    validation.add_argument("--post-id", required=True, type=int)
+    validation.add_argument("--validation-file", required=True)
+    validation.add_argument("--repo-root", type=Path, default=repository_root(),
+                            help=argparse.SUPPRESS)
+    summary_parser = subparsers.add_parser(
+        "summary", help="derive per-batch workflow totals")
+    summary_parser.add_argument("--json", action="store_true", dest="json_output")
+    summary_parser.add_argument(
+        "--repo-root", type=Path, default=repository_root(), help=argparse.SUPPRESS)
+    plan = subparsers.add_parser(
+        "plan-run", help="show safe future execution candidates without executing")
+    plan.add_argument("--json", action="store_true", dest="json_output")
+    plan.add_argument("--repo-root", type=Path, default=repository_root(),
+                      help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.command == "status":
-        result = build_status(args.repo_root)
-        output = render_text(result)
-    else:
-        result = init_state(args.repo_root, apply=args.apply)
-        output = render_init_text(result)
-    if args.json_output:
+    try:
+        if args.command == "status":
+            result = build_status(args.repo_root)
+            output = render_text(result)
+        elif args.command == "init-state":
+            result = init_state(args.repo_root, apply=args.apply)
+            output = render_init_text(result)
+        elif args.command == "show-current":
+            result = show_current(args.repo_root)
+            output = render_current_text(result)
+        elif args.command == "mark-converted":
+            result = mark_converted(
+                args.repo_root, args.post_id, args.syntax_count_before,
+                args.cbp_count_after, args.language_review_confirmed)
+            output = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        elif args.command == "record-validation":
+            result = record_validation(
+                args.repo_root, args.post_id, args.validation_file)
+            output = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        elif args.command == "summary":
+            result = summary(args.repo_root)
+            output = render_summary_text(result)
+        else:
+            result = plan_run(args.repo_root)
+            output = render_plan_text(result)
+    except ReadError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return EXIT_INTEGRITY_ERROR
+    if getattr(args, "json_output", False):
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(output)
-    if result["integrity_ok"]:
-        return EXIT_OK
-    return result.get("exit_code", EXIT_INTEGRITY_ERROR)
+    return EXIT_OK if result["integrity_ok"] else result.get(
+        "exit_code", EXIT_INTEGRITY_ERROR)
 
 
 if __name__ == "__main__":

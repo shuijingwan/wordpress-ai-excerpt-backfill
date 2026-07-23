@@ -128,6 +128,48 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         )
         return path
 
+    def write_record_validation(self, chinese=401, english=1401, **changes):
+        path = self.root / "evidence/validation.csv"
+        fields = [
+            "schema_version", "batch_id", "batch_sequence", "validated_at",
+            "chinese_post_id", "english_post_id", "chinese_title",
+            "before_content_sha256", "after_content_sha256",
+            "before_syntaxhighlighter_count", "after_syntaxhighlighter_count",
+            "before_code_block_pro_count", "expected_code_block_pro_count_after",
+            "after_code_block_pro_count", "code_block_pro_languages",
+            "chinese_excerpt_empty", "chinese_status", "chinese_language",
+            "english_status", "polylang_relation_status", "gutenberg_balanced",
+            "validation_status", "validation_reasons",
+        ]
+        value = {
+            "schema_version": 1,
+            "batch_id": "syntaxhighlighter-20260723-01",
+            "batch_sequence": 2,
+            "validated_at": "2026-07-23T00:00:00+00:00",
+            "chinese_post_id": chinese,
+            "english_post_id": english,
+            "chinese_title": f"标题 {chinese}",
+            "before_content_sha256": "a" * 64,
+            "after_content_sha256": "b" * 64,
+            "before_syntaxhighlighter_count": 1,
+            "after_syntaxhighlighter_count": 0,
+            "before_code_block_pro_count": 0,
+            "expected_code_block_pro_count_after": 1,
+            "after_code_block_pro_count": 1,
+            "code_block_pro_languages": "plaintext",
+            "chinese_excerpt_empty": "True",
+            "chinese_status": "publish",
+            "chinese_language": "zh",
+            "english_status": "publish",
+            "polylang_relation_status": "normal",
+            "gutenberg_balanced": "True",
+            "validation_status": "ready",
+            "validation_reasons": "",
+        }
+        value.update(changes)
+        self.write_csv(path, fields, [value])
+        return path
+
     def prepare_init_fixture(self):
         self.write_execution(100, 1100)
         self.write_execution(200, 1200)
@@ -525,6 +567,173 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             for path in base.rglob("*") if path.is_file()
         }
         self.assertEqual(before, after)
+
+    def test_show_current_preserves_fixed_order_and_json_is_valid(self):
+        _, waiting = self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        result = MODULE.show_current(self.root)
+        self.assertEqual("syntaxhighlighter-20260723-01", result["batch_id"])
+        self.assertEqual([value for value, _ in waiting],
+                         [item["chinese_post_id"] for item in result["articles"]])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([
+                "show-current", "--json", "--repo-root", str(self.root)])
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertEqual(result["batch_id"], json.loads(output.getvalue())["batch_id"])
+
+    def test_mark_converted_requires_language_and_matching_counts(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        with self.assertRaisesRegex(MODULE.ReadError, "language-review-confirmed"):
+            MODULE.mark_converted(self.root, 401, 1, 1, False)
+        with self.assertRaisesRegex(MODULE.ReadError, "must equal"):
+            MODULE.mark_converted(self.root, 401, 1, 2, True)
+
+    def test_mark_converted_is_atomic_and_idempotent(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        first = MODULE.mark_converted(self.root, 401, 1, 1, True)
+        path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        event_path = MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01")
+        before = (path.read_bytes(), event_path.read_bytes(), path.stat().st_mtime_ns)
+        second = MODULE.mark_converted(self.root, 401, 1, 1, True)
+        after = (path.read_bytes(), event_path.read_bytes(), path.stat().st_mtime_ns)
+        state = json.loads(path.read_text(encoding="utf-8"))
+        self.assertTrue(first["changed"])
+        self.assertFalse(second["changed"])
+        self.assertEqual(before, after)
+        self.assertEqual("awaiting_readonly_validation", state["workflow_status"])
+        self.assertEqual("confirmed", state["manual_conversion"]["status"])
+        self.assertEqual("confirmed", state["language_review"]["status"])
+
+    def test_mark_converted_rejects_cbp_and_completed(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        with self.assertRaisesRegex(MODULE.ReadError, "only accepts"):
+            MODULE.mark_converted(self.root, 100, 1, 1, True)
+        with self.assertRaisesRegex(MODULE.ReadError, "cannot mark"):
+            MODULE.mark_converted(self.root, 301, 1, 1, True)
+
+    def test_record_validation_passes_and_is_idempotent(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        path = self.write_record_validation()
+        first = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        event_path = MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01")
+        before = (state_path.read_bytes(), event_path.read_bytes(),
+                  state_path.stat().st_mtime_ns)
+        second = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.assertTrue(first["validation_passed"])
+        self.assertEqual("ready_for_execution", first["workflow_status"])
+        self.assertFalse(second["changed"])
+        self.assertEqual(before, (state_path.read_bytes(), event_path.read_bytes(),
+                                  state_path.stat().st_mtime_ns))
+
+    def test_record_validation_failure_is_isolated(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        path = self.write_record_validation(
+            validation_status="abnormal",
+            validation_reasons="code-block-pro-count-mismatch",
+            after_code_block_pro_count=0,
+        )
+        result = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        other = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("validation_failed", result["workflow_status"])
+        self.assertEqual("awaiting_manual_conversion", other["workflow_status"])
+
+    def test_record_validation_rejects_bad_file_identity_hash_and_paths(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        bad = self.root / "evidence/bad.csv"
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("{bad", encoding="utf-8")
+        with self.assertRaises(MODULE.ReadError):
+            MODULE.record_validation(self.root, 401, "evidence/bad.csv")
+        mismatch = self.write_record_validation(chinese=999)
+        with self.assertRaisesRegex(MODULE.ReadError, "exactly one row"):
+            MODULE.record_validation(
+                self.root, 401, str(mismatch.relative_to(self.root)))
+        wrong_hash = self.write_record_validation(before_content_sha256="c" * 64)
+        with self.assertRaisesRegex(MODULE.ReadError, "SHA-256 mismatch"):
+            MODULE.record_validation(
+                self.root, 401, str(wrong_hash.relative_to(self.root)))
+        with self.assertRaisesRegex(MODULE.ReadError, "repository-relative"):
+            MODULE.record_validation(self.root, 401, str(wrong_hash.resolve()))
+        with self.assertRaisesRegex(MODULE.ReadError, "repository-relative"):
+            MODULE.record_validation(self.root, 401, "../validation.csv")
+
+    def test_record_validation_rejects_truncated_row_without_mutating_state(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        event_path = MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01")
+        before = (state_path.read_bytes(), event_path.read_bytes())
+        path = self.write_record_validation()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text(lines[0] + "\n" + ",".join(lines[1].split(",")[:4]) + "\n",
+                        encoding="utf-8")
+        with self.assertRaisesRegex(MODULE.ReadError, str(path)):
+            MODULE.record_validation(
+                self.root, 401, str(path.relative_to(self.root)))
+        self.assertEqual(before, (state_path.read_bytes(), event_path.read_bytes()))
+
+    def test_plan_run_only_ready_and_summary_counts(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        plan = MODULE.plan_run(self.root)
+        self.assertEqual([401], [item["post_id"] for item in plan["items"]])
+        self.assertTrue(plan["items"][0]["allowed"])
+        result = MODULE.summary(self.root)
+        current = next(item for item in result["batches"]
+                       if item["batch_id"] == "syntaxhighlighter-20260723-01")
+        self.assertEqual(19, current["awaiting_manual_conversion"])
+        self.assertEqual(1, current["ready_for_execution"])
+        self.assertEqual(20, current["pending"])
+        self.assertFalse(result["can_create_next_batch"])
+
+    def test_read_only_commands_do_not_modify_files_and_drift_blocks_plan(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        before = self.snapshot()
+        MODULE.show_current(self.root)
+        MODULE.summary(self.root)
+        MODULE.plan_run(self.root)
+        self.assertEqual(before, self.snapshot())
+        path = (self.root / "data/analysis/"
+                "syntaxhighlighter-migration-batch-20260723-01.csv")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n")
+        with self.assertRaisesRegex(MODULE.ReadError, "integrity"):
+            MODULE.plan_run(self.root)
+
+    def test_mark_converted_lock_conflict(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        with MODULE.InitLock(self.root):
+            with self.assertRaisesRegex(MODULE.ReadError, "lock is already held"):
+                MODULE.mark_converted(self.root, 401, 1, 1, True)
 
 
 if __name__ == "__main__":
