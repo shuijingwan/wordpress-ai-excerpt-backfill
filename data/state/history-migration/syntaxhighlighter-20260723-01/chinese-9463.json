@@ -1,0 +1,25 @@
+{
+  "batch_id": "syntaxhighlighter-20260723-01",
+  "batch_position": 16,
+  "blocked_reasons": [],
+  "chinese_post_id": 9463,
+  "english_post_id": 11088,
+  "execution_evidence": null,
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-23T12:54:15.260528+00:00",
+  "language_review": {
+    "status": "not_recorded"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "status": "not_recorded"
+  },
+  "retry_counts": {},
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260723-01.csv",
+  "source_batch_sha256": "72cff1998e7636a4bf225e3a78bda9f928eee9d9b436eae7add3a69321f9ae17",
+  "source_row_sha256": "dbf475c8d2c8fd2cfb4aa652104985b6f52b331e5b45066be5318ded239821ef",
+  "updated_at": "2026-07-23T12:54:15.260528+00:00",
+  "validation_evidence": null,
+  "workflow_status": "awaiting_manual_conversion"
+}

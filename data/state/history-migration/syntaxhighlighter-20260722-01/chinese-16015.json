@@ -1,0 +1,34 @@
+{
+  "batch_id": "syntaxhighlighter-20260722-01",
+  "batch_position": 20,
+  "blocked_reasons": [],
+  "chinese_post_id": 16015,
+  "english_post_id": 16051,
+  "execution_evidence": {
+    "sha256": "e10a397c189533c1c629db2f6464d9bfb767aedae1587596361b3b044ee0f545",
+    "source_file": "data/backups/single-candidate/chinese-16015.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "imported from existing execution evidence with status=completed",
+  "initialized_at": "2026-07-23T12:54:15.260528+00:00",
+  "language_review": {
+    "status": "historical_unrecorded"
+  },
+  "legacy_import": true,
+  "manual_conversion": {
+    "status": "historical_unrecorded"
+  },
+  "retry_counts": {},
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260722-01.csv",
+  "source_batch_sha256": "82e4f55f1b062faf94bb97e175756a61d74cf9a421b85c2e57833110033448fc",
+  "source_row_sha256": "99aa46df904eb272bbb36236b3f38f58f6b68b002087ee43c893babafdc4664b",
+  "updated_at": "2026-07-23T12:54:15.260528+00:00",
+  "validation_evidence": {
+    "sha256": "66fa80223c641808fe1df13d4ed901160fa68351f0338e0f3ea9f997c7d474c5",
+    "source_file": "data/analysis/syntaxhighlighter-migration-batch-20260722-01-validation.csv",
+    "status": "ready",
+    "validated_at": "2026-07-22T13:04:31.470710+00:00"
+  },
+  "workflow_status": "completed"
+}

@@ -1,0 +1,29 @@
+{
+  "batch_id": "syntaxhighlighter-pilot-17586",
+  "batch_position": 1,
+  "blocked_reasons": [],
+  "chinese_post_id": 17586,
+  "english_post_id": 17641,
+  "execution_evidence": {
+    "sha256": "63c14367947a16b67d10cb186f7c602c1c77289652c404f4443992a545a80dad",
+    "source_file": "data/backups/single-candidate/chinese-17586.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "imported from existing execution evidence with status=completed",
+  "initialized_at": "2026-07-23T12:54:15.260528+00:00",
+  "language_review": {
+    "status": "historical_unrecorded"
+  },
+  "legacy_import": true,
+  "manual_conversion": {
+    "status": "historical_unrecorded"
+  },
+  "retry_counts": {},
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/gutenberg-syntaxhighlighter-migration-pilot-candidates.csv",
+  "source_batch_sha256": "4cd133740496bc6ea2d32c98a8d1518e14d02a16c2a8daa1be9de4077693f6f2",
+  "source_row_sha256": "15051add6f4ddefb38b3c5dc3269a0158dd3ec834b944803a8dff0743be0b18c",
+  "updated_at": "2026-07-23T12:54:15.260528+00:00",
+  "validation_evidence": null,
+  "workflow_status": "completed"
+}

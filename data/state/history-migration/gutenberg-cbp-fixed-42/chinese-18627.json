@@ -1,0 +1,29 @@
+{
+  "batch_id": "gutenberg-cbp-fixed-42",
+  "batch_position": 37,
+  "blocked_reasons": [],
+  "chinese_post_id": 18627,
+  "english_post_id": 18680,
+  "execution_evidence": {
+    "sha256": "3aed4cbb1a0bad6a5f2abeec29a74c594f6142b664817ab48d88f035318b27fb",
+    "source_file": "data/backups/single-candidate/chinese-18627.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "imported from existing execution evidence with status=completed",
+  "initialized_at": "2026-07-23T12:54:15.260528+00:00",
+  "language_review": {
+    "status": "historical_unrecorded"
+  },
+  "legacy_import": true,
+  "manual_conversion": {
+    "status": "not_applicable"
+  },
+  "retry_counts": {},
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/gutenberg-cbp-empty-excerpt-candidates.csv",
+  "source_batch_sha256": "7ec55e8e6451bffb8a712034d9cb9a7924fe508ffa8551e6ac9976f7fe3d5347",
+  "source_row_sha256": "a4fdcad950132c27f2e11919fcb20e259c90793c618e216ba4ef72e99d4009ce",
+  "updated_at": "2026-07-23T12:54:15.260528+00:00",
+  "validation_evidence": null,
+  "workflow_status": "completed"
+}

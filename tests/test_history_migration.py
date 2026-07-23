@@ -1,0 +1,531 @@
+import csv
+import importlib.util
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "bin/history-migration.py"
+SPEC = importlib.util.spec_from_file_location("history_migration", SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+SYNTAX_FIELDS = [
+    "schema_version", "batch_id", "batch_sequence", "allocated_at",
+    "chinese_post_id", "english_post_id", "chinese_title", "published_at",
+    "before_content_sha256", "before_syntaxhighlighter_count",
+    "before_code_block_pro_count", "migration_status", "validation_status",
+]
+MANIFEST_FIELDS = [
+    "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
+]
+
+
+class HistoryMigrationStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / "data/analysis").mkdir(parents=True)
+        (self.root / "data/backups/single-candidate").mkdir(parents=True)
+        self.write_manifest(
+            self.root / MODULE.LEGACY_BATCH["relative_path"],
+            [(100, 1100)], expected_override=1,
+        )
+        self.write_manifest(
+            self.root / MODULE.PILOT_BATCH["relative_path"],
+            [(200, 1200)], expected_override=1,
+        )
+        self.original_legacy_count = MODULE.LEGACY_BATCH["expected_count"]
+        MODULE.LEGACY_BATCH["expected_count"] = 1
+
+    def tearDown(self):
+        MODULE.LEGACY_BATCH["expected_count"] = self.original_legacy_count
+        self.temporary.cleanup()
+
+    def write_csv(self, path, fields, rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def write_manifest(self, path, pairs, expected_override=None):
+        del expected_override
+        self.write_csv(path, MANIFEST_FIELDS, [
+            {
+                "chinese_post_id": chinese,
+                "english_post_id": english,
+                "chinese_title": f"标题 {chinese}",
+                "execution_status": "pending",
+            }
+            for chinese, english in pairs
+        ])
+
+    def write_batch(self, name, pairs, sequence=1, fields=None):
+        path = self.root / "data/analysis" / name
+        values = []
+        batch_id = "syntaxhighlighter-" + name[
+            len("syntaxhighlighter-migration-batch-"):-len(".csv")
+        ]
+        for chinese, english in pairs:
+            values.append({
+                "schema_version": 1,
+                "batch_id": batch_id,
+                "batch_sequence": sequence,
+                "allocated_at": f"2026-07-{20 + sequence:02d}T00:00:00+00:00",
+                "chinese_post_id": chinese,
+                "english_post_id": english,
+                "chinese_title": f"标题 {chinese}",
+                "published_at": f"2020-01-{chinese % 28 + 1:02d} 00:00:00",
+                "before_content_sha256": "a" * 64,
+                "before_syntaxhighlighter_count": 1,
+                "before_code_block_pro_count": 0,
+                "migration_status": "pending",
+                "validation_status": "not-checked",
+            })
+        self.write_csv(path, fields or SYNTAX_FIELDS, values)
+        return path, batch_id
+
+    def write_execution(self, chinese, english, status="completed", raw=None):
+        path = (
+            self.root / "data/backups/single-candidate"
+            / f"chinese-{chinese}.execution.json"
+        )
+        if raw is not None:
+            path.write_text(raw, encoding="utf-8")
+        else:
+            path.write_text(json.dumps({
+                "schema_version": 1,
+                "chinese_post_id": chinese,
+                "english_post_id": english,
+                "status": status,
+            }), encoding="utf-8")
+        return path
+
+    def write_validation(self, batch_id, pairs, status="ready"):
+        suffix = batch_id.removeprefix("syntaxhighlighter-")
+        path = (
+            self.root / "data/analysis"
+            / f"syntaxhighlighter-migration-batch-{suffix}-validation.csv"
+        )
+        self.write_csv(
+            path,
+            ["batch_id", "chinese_post_id", "english_post_id",
+             "validation_status", "validated_at"],
+            [{
+                "batch_id": batch_id,
+                "chinese_post_id": chinese,
+                "english_post_id": english,
+                "validation_status": status,
+                "validated_at": "2026-07-22T00:00:00+00:00",
+            } for chinese, english in pairs],
+        )
+        return path
+
+    def prepare_init_fixture(self):
+        self.write_execution(100, 1100)
+        self.write_execution(200, 1200)
+        completed_pairs = [(value, value + 1000) for value in range(301, 321)]
+        _, completed_batch = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260722-01.csv",
+            completed_pairs, sequence=1,
+        )
+        for chinese, english in completed_pairs:
+            self.write_execution(chinese, english)
+        self.write_validation(completed_batch, completed_pairs)
+        waiting_pairs = [(value, value + 1000) for value in range(401, 421)]
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260723-01.csv",
+            waiting_pairs, sequence=2,
+        )
+        return completed_pairs, waiting_pairs
+
+    def snapshot(self):
+        return {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*") if path.is_file()
+        }
+
+    def status(self):
+        return MODULE.build_status(self.root)
+
+    def test_reads_valid_fixed_batch_and_preserves_order(self):
+        pairs = [(303, 1303), (301, 1301), (302, 1302)]
+        pairs.extend((value, value + 1000) for value in range(304, 321))
+        _, batch_id = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv",
+            pairs,
+        )
+        result = self.status()
+        batch = next(item for item in MODULE.discover_batches(self.root, [])
+                     if item["batch_id"] == batch_id)
+        self.assertEqual([303, 301, 302],
+                         [item["chinese_post_id"] for item in batch["articles"][:3]])
+        self.assertEqual(3, len(result["batches"]))
+        self.assertTrue(result["integrity_ok"])
+
+    def test_finds_multiple_batches_but_not_derived_csvs(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(301, 1301)])
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260722-01.csv", [(302, 1302)], 2)
+        self.write_csv(
+            self.root / "data/analysis/"
+            "syntaxhighlighter-migration-batch-20260722-01-validation.csv",
+            ["batch_id", "chinese_post_id", "english_post_id", "validation_status"],
+            [{
+                "batch_id": "syntaxhighlighter-20260722-01",
+                "chinese_post_id": 302,
+                "english_post_id": 1302,
+                "validation_status": "ready",
+            }],
+        )
+        self.write_csv(
+            self.root / "data/analysis/"
+            "syntaxhighlighter-migration-batch-20260722-01-execution-candidates.csv",
+            MANIFEST_FIELDS,
+            [{
+                "chinese_post_id": 302,
+                "english_post_id": 1302,
+                "chinese_title": "标题 302",
+                "execution_status": "pending",
+            }],
+        )
+        result = self.status()
+        self.assertEqual(4, len(result["batches"]))
+        self.assertEqual(1, next(
+            item for item in result["batches"]
+            if item["batch_id"] == "syntaxhighlighter-20260722-01"
+        )["validation_evidence_count"])
+
+    def test_completed_and_missing_execution_evidence(self):
+        self.write_execution(100, 1100)
+        result = self.status()
+        self.assertEqual(1, result["execution_counts"]["completed"])
+        self.assertEqual(1, result["execution_counts"]["no_execution_evidence"])
+        self.assertTrue(result["integrity_ok"])
+
+    def test_damaged_execution_json_is_error(self):
+        self.write_execution(100, 1100, raw="{bad")
+        result = self.status()
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any("invalid execution JSON" in item for item in result["errors"]))
+
+    def test_recognizes_real_execution_status_categories(self):
+        pairs = [(value, value + 1000) for value in range(301, 321)]
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", pairs)
+        self.write_execution(301, 1301, "completed")
+        self.write_execution(302, 1302, "translation_started")
+        self.write_execution(303, 1303, "translation_failed")
+        self.write_execution(304, 1304, "pending")
+        counts = self.status()["execution_counts"]
+        self.assertEqual(1, counts["completed"])
+        self.assertEqual(1, counts["translation_started"])
+        self.assertEqual(1, counts["failed"])
+        self.assertEqual(1, counts["pending"])
+
+    def test_duplicate_chinese_id_within_batch(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv",
+            [(301, 1301), (301, 1301)],
+        )
+        result = self.status()
+        self.assertTrue(any(
+            item["type"] == "duplicate_chinese_post_id_within_batch"
+            for item in result["conflicts"]
+        ))
+
+    def test_duplicate_chinese_id_across_batches(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(100, 1100)])
+        result = self.status()
+        self.assertTrue(any(
+            item["type"] == "duplicate_chinese_post_id_across_batches"
+            for item in result["conflicts"]
+        ))
+
+    def test_different_english_mapping_is_conflict(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(100, 9999)])
+        result = self.status()
+        self.assertTrue(any(
+            item.get("english_mapping_conflict") is True
+            for item in result["conflicts"]
+        ))
+
+    def test_missing_required_field_is_error(self):
+        fields = [field for field in SYNTAX_FIELDS if field != "english_post_id"]
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv",
+            [(301, 1301)], fields=fields,
+        )
+        result = self.status()
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any("missing required fields: english_post_id" in item
+                            for item in result["errors"]))
+
+    def test_invalid_post_id_is_error(self):
+        path, _ = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(301, 1301)])
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0]["chinese_post_id"] = "not-an-id"
+        self.write_csv(path, SYNTAX_FIELDS, rows)
+        result = self.status()
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any("invalid chinese_post_id" in item for item in result["errors"]))
+
+    def test_abnormal_fixed_count_is_error(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(301, 1301)])
+        result = self.status()
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any("expected 20 fixed articles, found 1" in item
+                            for item in result["errors"]))
+
+    def test_json_output_is_valid_and_incomplete_is_success(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([
+                "status", "--json", "--repo-root", str(self.root),
+            ])
+        value = json.loads(output.getvalue())
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertGreater(value["execution_counts"]["no_execution_evidence"], 0)
+
+    def test_integrity_conflict_returns_nonzero(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(100, 1100)])
+        with redirect_stdout(io.StringIO()):
+            code = MODULE.main(["status", "--repo-root", str(self.root)])
+        self.assertEqual(MODULE.EXIT_INTEGRITY_ERROR, code)
+
+    def test_status_is_strictly_read_only(self):
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv", [(301, 1301)])
+        before = self.snapshot()
+        self.status()
+        after = self.snapshot()
+        self.assertEqual(before, after)
+
+    def test_init_state_preview_is_read_only_and_json_is_valid(self):
+        self.prepare_init_fixture()
+        before = self.snapshot()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([
+                "init-state", "--json", "--repo-root", str(self.root),
+            ])
+        result = json.loads(output.getvalue())
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertEqual(42, result["planned_count"])
+        self.assertEqual(42, result["would_create_count"])
+        self.assertEqual(0, result["created_count"])
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.root / MODULE.STATE_ROOT).exists())
+
+    def test_apply_creates_identity_fields_and_expected_mappings(self):
+        _, waiting = self.prepare_init_fixture()
+        result = MODULE.init_state(self.root, apply=True)
+        self.assertTrue(result["integrity_ok"])
+        self.assertEqual(42, result["created_count"])
+        self.assertEqual(0, result["unchanged_count"])
+        self.assertEqual(22, result["legacy_import_count"])
+        self.assertEqual(20, result["awaiting_manual_conversion_count"])
+        waiting_state = json.loads(
+            MODULE._state_path(self.root, "syntaxhighlighter-20260723-01", 401)
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(waiting[0][0], waiting_state["chinese_post_id"])
+        self.assertEqual("syntaxhighlighter-20260723-01", waiting_state["batch_id"])
+        self.assertEqual(1, waiting_state["batch_position"])
+        self.assertEqual(
+            "data/analysis/syntaxhighlighter-migration-batch-20260723-01.csv",
+            waiting_state["source_batch_file"],
+        )
+        self.assertEqual(64, len(waiting_state["source_batch_sha256"]))
+        self.assertEqual(64, len(waiting_state["source_row_sha256"]))
+        self.assertEqual(
+            "awaiting_manual_conversion", waiting_state["workflow_status"])
+        self.assertFalse(waiting_state["legacy_import"])
+
+    def test_historical_completed_evidence_and_manual_unknowns_are_explicit(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        cbp = json.loads(
+            MODULE._state_path(self.root, "gutenberg-cbp-fixed-42", 100)
+            .read_text(encoding="utf-8")
+        )
+        pilot = json.loads(
+            MODULE._state_path(self.root, "syntaxhighlighter-pilot-17586", 200)
+            .read_text(encoding="utf-8")
+        )
+        migrated = json.loads(
+            MODULE._state_path(self.root, "syntaxhighlighter-20260722-01", 301)
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual("completed", cbp["workflow_status"])
+        self.assertTrue(cbp["legacy_import"])
+        self.assertEqual("not_applicable", cbp["manual_conversion"]["status"])
+        self.assertEqual(
+            "historical_unrecorded", cbp["language_review"]["status"])
+        self.assertEqual("historical_unrecorded",
+                         pilot["manual_conversion"]["status"])
+        self.assertIsNone(pilot["validation_evidence"])
+        self.assertEqual("ready", migrated["validation_evidence"]["status"])
+        self.assertNotIn("confirmed_at", migrated["manual_conversion"])
+        self.assertNotIn("confirmed_by", migrated["language_review"])
+
+    def test_second_apply_is_idempotent_and_does_not_repeat_events(self):
+        self.prepare_init_fixture()
+        first = MODULE.init_state(self.root, apply=True)
+        self.assertEqual(42, first["created_count"])
+        state_root = self.root / MODULE.STATE_ROOT
+        before = {
+            path.relative_to(state_root):
+                (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in state_root.rglob("*") if path.is_file()
+        }
+        second = MODULE.init_state(self.root, apply=True)
+        after = {
+            path.relative_to(state_root):
+                (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in state_root.rglob("*") if path.is_file()
+        }
+        self.assertEqual(0, second["created_count"])
+        self.assertEqual(42, second["unchanged_count"])
+        self.assertFalse(second["writes_performed"])
+        self.assertEqual(before, after)
+        events = [
+            json.loads(line)
+            for path in state_root.glob("*/events.jsonl")
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(42, len(events))
+        self.assertEqual(42, len({item["event_id"] for item in events}))
+
+    def test_existing_state_identity_conflict_is_not_overwritten(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["english_post_id"] = 9999
+        path.write_text(json.dumps(value), encoding="utf-8")
+        before = path.read_bytes()
+        result = MODULE.init_state(self.root, apply=True)
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any(
+            item["type"] == "coordination_state_identity_conflict"
+            for item in result["conflicts"]
+        ))
+        self.assertEqual(before, path.read_bytes())
+
+    def test_fixed_batch_drift_is_reported_by_status(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        path = (
+            self.root / "data/analysis"
+            / "syntaxhighlighter-migration-batch-20260723-01.csv"
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n")
+        result = MODULE.build_status(self.root)
+        self.assertFalse(result["integrity_ok"])
+        self.assertFalse(result["state_integrity"])
+        self.assertTrue(result["batch_drift"])
+
+    def test_damaged_state_and_event_are_errors(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state_path.write_text("{bad", encoding="utf-8")
+        event_path = MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01")
+        event_path.write_text("{bad\n", encoding="utf-8")
+        result = MODULE.build_status(self.root)
+        self.assertFalse(result["integrity_ok"])
+        self.assertTrue(any("invalid coordination state JSON" in item
+                            for item in result["state_errors"]))
+        self.assertTrue(any("invalid event JSON" in item
+                            for item in result["state_errors"]))
+
+    def test_status_before_and_after_initialization(self):
+        self.prepare_init_fixture()
+        before = MODULE.build_status(self.root)
+        self.assertEqual(0, before["coordination_state_count"])
+        self.assertEqual(42, before["uninitialized_count"])
+        MODULE.init_state(self.root, apply=True)
+        after = MODULE.build_status(self.root)
+        self.assertEqual(42, after["coordination_state_count"])
+        self.assertEqual(0, after["uninitialized_count"])
+        self.assertEqual(20, after["awaiting_manual_conversion_count"])
+        self.assertEqual(22, after["coordination_status_counts"]["completed"])
+
+    def test_apply_json_is_valid(self):
+        self.prepare_init_fixture()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = MODULE.main([
+                "init-state", "--apply", "--json",
+                "--repo-root", str(self.root),
+            ])
+        result = json.loads(output.getvalue())
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertEqual(42, result["created_count"])
+        self.assertTrue(result["writes_performed"])
+
+    def test_lock_conflict_returns_nonzero(self):
+        self.prepare_init_fixture()
+        with MODULE.InitLock(self.root):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = MODULE.main([
+                    "init-state", "--apply", "--json",
+                    "--repo-root", str(self.root),
+                ])
+        result = json.loads(output.getvalue())
+        self.assertEqual(MODULE.EXIT_LOCK_CONFLICT, code)
+        self.assertFalse(result["integrity_ok"])
+
+    def test_atomic_state_write_failure_leaves_no_temporary_file(self):
+        self.prepare_init_fixture()
+        with mock.patch.object(
+                MODULE, "_atomic_write_json", side_effect=OSError("injected")):
+            result = MODULE.init_state(self.root, apply=True)
+        self.assertFalse(result["integrity_ok"])
+        state_root = self.root / MODULE.STATE_ROOT
+        self.assertFalse(any(state_root.rglob("*.tmp")))
+        self.assertFalse(any(state_root.glob("*/chinese-*.json")))
+
+    def test_initialization_does_not_modify_fixed_or_execution_evidence(self):
+        self.prepare_init_fixture()
+        protected_roots = [
+            self.root / "data/analysis",
+            self.root / "data/backups/single-candidate",
+        ]
+        before = {
+            path: path.read_bytes()
+            for base in protected_roots
+            for path in base.rglob("*") if path.is_file()
+        }
+        MODULE.init_state(self.root, apply=True)
+        after = {
+            path: path.read_bytes()
+            for base in protected_roots
+            for path in base.rglob("*") if path.is_file()
+        }
+        self.assertEqual(before, after)
+
+
+if __name__ == "__main__":
+    unittest.main()
