@@ -8,18 +8,44 @@
   "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
   "initialized_at": "2026-07-23T12:54:15.260528+00:00",
   "language_review": {
-    "status": "not_recorded"
+    "confirmed_at": "2026-07-23T13:36:07.246486+00:00",
+    "status": "confirmed"
   },
   "legacy_import": false,
   "manual_conversion": {
-    "status": "not_recorded"
+    "cbp_count_after": 13,
+    "confirmed_at": "2026-07-23T13:36:07.246486+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 13
   },
   "retry_counts": {},
   "schema_version": 1,
   "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260723-01.csv",
   "source_batch_sha256": "72cff1998e7636a4bf225e3a78bda9f928eee9d9b436eae7add3a69321f9ae17",
   "source_row_sha256": "4a1aa0af7d0ce5d952ce184a9999b6207d2d8116bbe8f80380c4c8ef6f633976",
-  "updated_at": "2026-07-23T12:54:15.260528+00:00",
-  "validation_evidence": null,
-  "workflow_status": "awaiting_manual_conversion"
+  "updated_at": "2026-07-23T13:53:01.067574+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "82736c4eef7c04912c5d30f8f9feab7e52bd3a304044965708c8521fb8ea253c",
+    "checks": {
+      "before_cbp_count": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "e2e580646e449fc201d553856ef5cfcfe98b849d364129ccf9d3d0d9bb2422d0",
+    "source_file": "data/analysis/history-migration-validation/syntaxhighlighter-20260723-01/chinese-2922.csv",
+    "status": "ready",
+    "validated_at": "2026-07-23T13:53:00.918040+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "ready_for_execution"
 }

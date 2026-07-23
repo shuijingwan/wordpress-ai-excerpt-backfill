@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -168,6 +169,69 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         }
         value.update(changes)
         self.write_csv(path, fields, [value])
+        return path
+
+    def validation_row(self, **changes):
+        path = self.write_record_validation(**changes)
+        with path.open(encoding="utf-8", newline="") as handle:
+            return next(csv.DictReader(handle))
+
+    def fake_source(self):
+        class Source:
+            posts = {
+                401: {
+                    "id": 401, "status": "publish",
+                    "title": {"raw": "标题 401"},
+                    "excerpt": {"raw": ""},
+                    "content": {"raw": "not persisted"},
+                },
+                1401: {
+                    "id": 1401, "status": "publish",
+                    "title": {"raw": "English"},
+                    "excerpt": {"raw": ""},
+                    "content": {"raw": "English body"},
+                },
+            }
+
+            def get_post(self, post_id):
+                return self.posts[int(post_id)]
+
+            def check(self, chinese, english):
+                return {}
+        return Source()
+
+    def prepare_converted(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        (self.root / "config").mkdir()
+        (self.root / "config/classification.json").write_text(
+            "{}", encoding="utf-8")
+
+    def create_execution_manifest(self, post_id=401):
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", post_id
+        ).read_text(encoding="utf-8"))
+        path = MODULE._validation_paths(
+            self.root, state["batch_id"], post_id)[2]
+        row = {
+            field: "" for field in MODULE.EXECUTION_MANIFEST_FIELDS
+        }
+        row.update({
+            "chinese_post_id": post_id,
+            "chinese_title": f"标题 {post_id}",
+            "chinese_content_sha256": "b" * 64,
+            "chinese_excerpt_empty": "True",
+            "english_post_id": post_id + 1000,
+            "english_post_status": "publish",
+            "english_title_sha256": "c" * 64,
+            "english_excerpt_sha256": "d" * 64,
+            "english_content_sha256": "e" * 64,
+            "candidate_reason": "test",
+            "execution_status": "pending",
+        })
+        MODULE._atomic_write_csv(
+            path, MODULE.EXECUTION_MANIFEST_FIELDS, [row])
         return path
 
     def prepare_init_fixture(self):
@@ -734,6 +798,235 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         with MODULE.InitLock(self.root):
             with self.assertRaisesRegex(MODULE.ReadError, "lock is already held"):
                 MODULE.mark_converted(self.root, 401, 1, 1, True)
+
+    def test_validate_live_passes_creates_scoped_evidence_and_is_idempotent(self):
+        self.prepare_converted()
+        row = self.validation_row()
+        source = self.fake_source()
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[row]):
+            first = MODULE.validate_live(
+                self.root, 401, source_factory=lambda rows: source)
+        paths = MODULE._validation_paths(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        self.assertEqual("ready_for_execution", first["workflow_status"])
+        self.assertTrue(all(path.is_file() for path in paths))
+        self.assertIn("chinese-401.csv", first["validation_file"])
+        before = self.snapshot()
+        second = MODULE.validate_live(
+            self.root, 401,
+            source_factory=mock.Mock(side_effect=AssertionError("no fetch")))
+        self.assertFalse(second["changed"])
+        self.assertEqual(before, self.snapshot())
+        self.assertNotIn(b"not persisted", paths[0].read_bytes())
+        self.assertNotIn(b"English body", paths[2].read_bytes())
+
+    def test_validate_live_business_failure_and_operation_failure(self):
+        self.prepare_converted()
+        source = self.fake_source()
+        failed = self.validation_row(
+            validation_status="abnormal",
+            validation_reasons="code-block-pro-count-mismatch",
+            after_code_block_pro_count=0)
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[failed]):
+            result = MODULE.validate_live(
+                self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("validation_failed", result["workflow_status"])
+
+        other = 402
+        MODULE.mark_converted(self.root, other, 1, 1, True)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", other)
+        before = state_path.read_bytes()
+        with self.assertRaisesRegex(MODULE.ReadError, "operation failed"):
+            MODULE.validate_live(
+                self.root, other,
+                source_factory=mock.Mock(side_effect=OSError("network")))
+        self.assertEqual(before, state_path.read_bytes())
+
+    def test_run_ready_preview_and_execute_completed(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        before = self.snapshot()
+        preview = MODULE.run_ready(self.root)
+        self.assertEqual(1, preview["allowed_count"])
+        self.assertEqual(before, self.snapshot())
+
+        def runner(command, **kwargs):
+            self.assertIn("execute-single-candidate.py", command[1])
+            self.assertIn("--execute", command)
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["workflow_status"])
+        self.assertEqual("completed", result["results"][0]["result"])
+        self.assertEqual([], MODULE.run_ready(self.root)["items"])
+
+    def test_run_ready_failure_isolated_and_maps_excerpt_failure(self):
+        self.prepare_converted()
+        for post_id in (401, 402):
+            if post_id == 402:
+                MODULE.mark_converted(self.root, 402, 1, 1, True)
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"validation-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+
+        def runner(command, **kwargs):
+            post_id = int(command[command.index("--post-id") + 1])
+            status = "excerpt_rejected" if post_id == 401 else "completed"
+            self.write_execution(post_id, post_id + 1000, status)
+            return mock.Mock(returncode=2 if post_id == 401 else 0,
+                             stdout="", stderr="")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        self.assertEqual(2, len(result["results"]))
+        states = {
+            post_id: json.loads(MODULE._state_path(
+                self.root, "syntaxhighlighter-20260723-01", post_id
+            ).read_text(encoding="utf-8"))["workflow_status"]
+            for post_id in (401, 402)
+        }
+        self.assertEqual("excerpt_failed", states[401])
+        self.assertEqual("completed", states[402])
+
+    def test_run_ready_timeout_blocks_one_and_continues(self):
+        self.prepare_converted()
+        for post_id in (401, 402):
+            if post_id == 402:
+                MODULE.mark_converted(self.root, 402, 1, 1, True)
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"timeout-validation-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+
+        def runner(command, **kwargs):
+            post_id = int(command[command.index("--post-id") + 1])
+            if post_id == 401:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            self.write_execution(402, 1402, "completed")
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        self.assertEqual(["blocked", "completed"],
+                         [item["result"] for item in result["results"]])
+        states = [
+            json.loads(MODULE._state_path(
+                self.root, "syntaxhighlighter-20260723-01", post_id
+            ).read_text(encoding="utf-8"))["workflow_status"]
+            for post_id in (401, 402)
+        ]
+        self.assertEqual(["blocked", "completed"], states)
+
+    def test_sync_execution_preview_apply_and_identity_conflict(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        self.write_execution(401, 1401, "translation_failed")
+        before = self.snapshot()
+        preview = MODULE.sync_execution(self.root)
+        self.assertEqual(1, preview["planned_count"])
+        self.assertEqual(before, self.snapshot())
+        applied = MODULE.sync_execution(self.root, apply=True)
+        self.assertEqual(1, applied["changed_count"])
+        again = MODULE.sync_execution(self.root, apply=True)
+        self.assertEqual(0, again["changed_count"])
+        self.write_execution(402, 9999, "completed")
+        with self.assertRaisesRegex(MODULE.ReadError, "English post ID mismatch"):
+            MODULE.sync_execution(self.root)
+
+    def test_resume_preview_execute_and_retry_limit(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        self.write_execution(401, 1401, "translation_failed")
+        MODULE.sync_execution(self.root, apply=True)
+        preview = MODULE.resume(self.root)
+        self.assertEqual([401], [item["post_id"] for item in preview["items"]])
+        self.assertTrue(preview["items"][0]["allowed"])
+
+        def runner(command, **kwargs):
+            self.assertIn("--resume", command)
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        MODULE.resume(self.root, execute=True, runner=runner)
+        self.assertEqual([], MODULE.resume(self.root)["items"])
+
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "translation_failed"
+        state["retry_counts"] = {"resume": MODULE.MAX_RESUME_ATTEMPTS}
+        MODULE._atomic_write_json(state_path, state)
+        self.write_execution(402, 1402, "translation_failed")
+        item = MODULE.resume(self.root, post_id=402)["items"][0]
+        self.assertFalse(item["allowed"])
+        self.assertIn("resume retry limit exhausted", item["blocking_reasons"])
+        MODULE.resume(
+            self.root, execute=True, post_id=402,
+            runner=mock.Mock(side_effect=AssertionError("must not run")))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+
+    def test_new_json_commands_are_valid_and_read_only(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        before = self.snapshot()
+        for command in ("run-ready", "resume", "sync-execution"):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = MODULE.main([
+                    command, "--json", "--repo-root", str(self.root)])
+            self.assertEqual(MODULE.EXIT_OK, code)
+            json.loads(output.getvalue())
+        self.assertEqual(before, self.snapshot())
+
+    def test_validate_live_json_output_is_valid(self):
+        expected = {
+            "schema_version": 1, "mode": "already-recorded",
+            "workflow_status": "ready_for_execution",
+            "integrity_ok": True,
+        }
+        output = io.StringIO()
+        with mock.patch.object(MODULE, "validate_live", return_value=expected):
+            with redirect_stdout(output):
+                code = MODULE.main([
+                    "validate-live", "--post-id", "401", "--json",
+                    "--repo-root", str(self.root)])
+        self.assertEqual(MODULE.EXIT_OK, code)
+        self.assertEqual(expected, json.loads(output.getvalue()))
+
+    def test_script_entrypoint_can_import_repository_modules(self):
+        completed = subprocess.run(
+            ["python3", str(SCRIPT), "--help"],
+            cwd=self.root, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(
+            0, completed.returncode, completed.stderr + completed.stdout)
+        self.assertIn("validate-live", completed.stdout)
+
+    def test_validate_and_run_lock_conflict(self):
+        self.prepare_converted()
+        with MODULE.InitLock(self.root):
+            with self.assertRaisesRegex(MODULE.ReadError, "lock is already held"):
+                MODULE.validate_live(self.root, 401)
+            with self.assertRaisesRegex(MODULE.ReadError, "lock is already held"):
+                MODULE.run_ready(self.root, execute=True)
 
 
 if __name__ == "__main__":

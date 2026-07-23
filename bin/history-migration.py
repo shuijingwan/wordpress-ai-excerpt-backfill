@@ -11,8 +11,14 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.candidate_execution import SafetyError
 
 
 SCHEMA_VERSION = 1
@@ -29,10 +35,22 @@ INIT_EVENT_TYPE = "coordination_state_initialized"
 COORDINATION_STATUSES = {
     "awaiting_manual_conversion", "awaiting_manual_review", "awaiting_validation",
     "awaiting_readonly_validation", "ready_for_execution",
+    "execution_in_progress",
     "validation_failed", "ready_for_excerpt", "excerpt_failed",
     "ready_for_translation_resume", "translation_failed", "completed", "blocked",
     "paused",
 }
+MAX_RUN_ATTEMPTS = 2
+MAX_RESUME_ATTEMPTS = 2
+VALIDATION_ROOT = Path("data/analysis/history-migration-validation")
+EXECUTION_MANIFEST_FIELDS = (
+    "chinese_post_id", "chinese_title", "chinese_content_sha256",
+    "chinese_excerpt_empty", "english_post_id", "english_post_status",
+    "english_title_sha256", "english_excerpt_sha256", "english_content_sha256",
+    "candidate_reason", "execution_status", "chinese_post_status",
+    "chinese_language", "source_migration_type",
+    "expected_code_block_pro_count", "expected_syntaxhighlighter_count",
+)
 
 LEGACY_BATCH = {
     "batch_id": "gutenberg-cbp-fixed-42",
@@ -1120,6 +1138,24 @@ def build_status(root):
     }
     result["integrity_ok"] = (
         result["integrity_ok"] and result["state_integrity"])
+    workflow_counts = result["coordination_status_counts"]
+    for status in (
+            "ready_for_execution", "execution_in_progress",
+            "ready_for_translation_resume", "excerpt_failed",
+            "translation_failed", "validation_failed", "blocked", "completed"):
+        result[f"{status}_count"] = workflow_counts.get(status, 0)
+    result["remaining_count"] = (
+        result["fixed_article_count"] - workflow_counts.get("completed", 0))
+    result["retry_exhausted_count"] = sum(
+        any(int(value) >= (
+            MAX_RESUME_ATTEMPTS if key == "resume" else MAX_RUN_ATTEMPTS)
+            for key, value in (state.get("retry_counts") or {}).items())
+        for state in coordination_states.values()
+    )
+    result["next_action"] = _next_action({
+        **{key: workflow_counts.get(key, 0) for key in SUMMARY_KEYS},
+        "total": result["fixed_article_count"],
+    })
     return result
 
 
@@ -1132,9 +1168,16 @@ def _context(root):
     executions = read_execution_states(root, errors)
     coordination = read_coordination_states(root, batches, errors)
     if errors or conflicts or coordination["batch_drift"]:
+        details = list(errors)
+        details.extend(
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for item in conflicts)
+        details.extend(
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for item in coordination["batch_drift"])
         raise ReadError(
             "repository integrity check failed: "
-            + "; ".join(errors or ["conflict or fixed batch drift detected"])
+            + "; ".join(details or ["conflict or fixed batch drift detected"])
         )
     return root, batches, fixed, executions, coordination["states"]
 
@@ -1411,61 +1454,209 @@ def _validation_result(path, batch, article, state):
     return row, passed, sorted(set(failure_reasons)), checks
 
 
+def _record_validation_locked(root, post_id, validation_file):
+    root, batches, fixed, _, states = _context(root)
+    article = fixed.get(int(post_id))
+    if article is None:
+        raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+    state = states.get(int(post_id))
+    if state is None:
+        raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+    path = _safe_repository_path(root, validation_file)
+    digest = _file_sha256(path)
+    existing = state.get("validation_evidence")
+    if state["workflow_status"] in {"ready_for_execution", "validation_failed"}:
+        if existing and existing.get("sha256") == digest:
+            return {
+                "schema_version": SCHEMA_VERSION, "changed": False,
+                "workflow_status": state["workflow_status"],
+                "chinese_post_id": int(post_id), "integrity_ok": True,
+            }
+    if state["workflow_status"] != "awaiting_readonly_validation":
+        raise ReadError(
+            f"cannot record validation from {state['workflow_status']}")
+    batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
+    row, passed, reasons, checks = _validation_result(
+        path, batch, article, state)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    previous = state["workflow_status"]
+    new_status = "ready_for_execution" if passed else "validation_failed"
+    evidence = {
+        "source_file": _relative(path, root),
+        "sha256": digest,
+        "status": row["validation_status"],
+        "validated_at": row.get("validated_at") or None,
+        "after_content_sha256": row["after_content_sha256"],
+        "checks": checks,
+        "failure_reasons": reasons,
+    }
+    state["workflow_status"] = new_status
+    state["validation_evidence"] = evidence
+    state["validation_failure_reasons"] = reasons
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "readonly_validation_recorded", state, previous, new_status,
+        "read-only validation passed" if passed
+        else "read-only validation failed",
+        evidence, timestamp, digest,
+    )
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return {
+        "schema_version": SCHEMA_VERSION, "changed": True,
+        "workflow_status": new_status, "validation_passed": passed,
+        "failure_reasons": reasons, "chinese_post_id": int(post_id),
+        "integrity_ok": True,
+    }
+
+
 def record_validation(root, post_id, validation_file):
     with InitLock(Path(root).resolve()):
+        return _record_validation_locked(root, post_id, validation_file)
+
+
+def _validation_paths(root, batch_id, post_id):
+    directory = root / VALIDATION_ROOT / batch_id
+    return (
+        directory / f"chinese-{int(post_id)}.csv",
+        directory / f"chinese-{int(post_id)}.snapshot.jsonl",
+        directory / f"chinese-{int(post_id)}.execution-candidate.csv",
+    )
+
+
+def _atomic_write_csv(path, fields, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=fields, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _execution_manifest_row(article, validation_row, source):
+    from src.candidate_execution import sha256_text
+    from src.single_candidate_flow import raw_field
+
+    chinese = source.get_post(article["chinese_post_id"])
+    english = source.get_post(article["english_post_id"])
+    return {
+        "chinese_post_id": article["chinese_post_id"],
+        "chinese_title": article["title"],
+        "chinese_content_sha256": validation_row["after_content_sha256"],
+        "chinese_excerpt_empty": validation_row["chinese_excerpt_empty"],
+        "english_post_id": article["english_post_id"],
+        "english_post_status": validation_row["english_status"],
+        "english_title_sha256": sha256_text(raw_field(english, "title")),
+        "english_excerpt_sha256": sha256_text(raw_field(english, "excerpt")),
+        "english_content_sha256": sha256_text(raw_field(english, "content")),
+        "candidate_reason":
+            "fixed SyntaxHighlighter article; manual language review confirmed; "
+            "production read-only validation ready",
+        "execution_status": "pending",
+        "chinese_post_status": validation_row["chinese_status"],
+        "chinese_language": validation_row["chinese_language"],
+        "source_migration_type": "syntaxhighlighter-to-code-block-pro",
+        "expected_code_block_pro_count":
+            validation_row["expected_code_block_pro_count_after"],
+        "expected_syntaxhighlighter_count": 0,
+    }
+
+
+def validate_live(root, post_id, source_factory=None):
+    """Reuse the batch read-only source and validator for exactly one fixed row."""
+    root = Path(root).resolve()
+    with InitLock(root):
         root, batches, fixed, _, states = _context(root)
         article = fixed.get(int(post_id))
         if article is None:
             raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+        batch = next(
+            item for item in batches if item["batch_id"] == article["batch_id"])
+        if batch["source_type"] != "syntaxhighlighter_daily":
+            raise ReadError("validate-live only accepts SyntaxHighlighter daily batches")
         state = states.get(int(post_id))
         if state is None:
             raise ReadError(f"coordination state is missing for Chinese post {post_id}")
-        path = _safe_repository_path(root, validation_file)
-        digest = _file_sha256(path)
-        existing = state.get("validation_evidence")
-        if state["workflow_status"] in {"ready_for_execution", "validation_failed"}:
-            if existing and existing.get("sha256") == digest:
+        csv_path, snapshot_path, manifest_path = _validation_paths(
+            root, batch["batch_id"], post_id)
+        relative_csv = _relative(csv_path, root)
+        if state["workflow_status"] in {
+                "ready_for_execution", "validation_failed"}:
+            existing = state.get("validation_evidence")
+            if existing and existing.get("source_file") == relative_csv:
+                result = _record_validation_locked(root, post_id, relative_csv)
                 return {
-                    "schema_version": SCHEMA_VERSION, "changed": False,
-                    "workflow_status": state["workflow_status"],
-                    "chinese_post_id": int(post_id), "integrity_ok": True,
+                    **result, "mode": "already-recorded",
+                    "validation_file": relative_csv,
+                    "wordpress_writes": 0, "glm_calls": 0,
+                    "translation_calls": 0,
                 }
         if state["workflow_status"] != "awaiting_readonly_validation":
             raise ReadError(
-                f"cannot record validation from {state['workflow_status']}")
-        batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
-        row, passed, reasons, checks = _validation_result(
-            path, batch, article, state)
-        timestamp = datetime.now(timezone.utc).isoformat()
-        previous = state["workflow_status"]
-        new_status = "ready_for_execution" if passed else "validation_failed"
-        evidence = {
-            "source_file": _relative(path, root),
-            "sha256": digest,
-            "status": row["validation_status"],
-            "validated_at": row.get("validated_at") or None,
-            "after_content_sha256": row["after_content_sha256"],
-            "checks": checks,
-            "failure_reasons": reasons,
-        }
-        state["workflow_status"] = new_status
-        state["validation_evidence"] = evidence
-        state["validation_failure_reasons"] = reasons
-        state["updated_at"] = timestamp
-        event = _transition_event(
-            "readonly_validation_recorded", state, previous, new_status,
-            "read-only validation passed" if passed
-            else "read-only validation failed",
-            evidence, timestamp, digest,
-        )
-        _persist_transition(
-            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+                f"cannot validate live from {state['workflow_status']}")
+        if csv_path.exists():
+            result = _record_validation_locked(root, post_id, relative_csv)
+            return {
+                **result, "mode": "import-existing",
+                "validation_file": relative_csv,
+                "wordpress_writes": 0, "glm_calls": 0,
+                "translation_calls": 0,
+            }
+        if snapshot_path.exists() or manifest_path.exists():
+            raise ReadError(
+                f"partial validation evidence already exists for Chinese post {post_id}")
+        try:
+            from src.batch_readonly_ssh import BatchReadonlySshSource
+            from src.syntaxhighlighter_batch_validation import (
+                VALIDATION_FIELDS as LIVE_VALIDATION_FIELDS,
+                validate_batch, write_outputs)
+
+            config = json.loads(
+                (root / "config/classification.json").read_text(encoding="utf-8"))
+            source = (
+                source_factory([article["source_row"]])
+                if source_factory else
+                BatchReadonlySshSource.fetch([article["source_row"]])
+            )
+            rows = validate_batch(
+                [article["source_row"]], source, source, config)
+            if len(rows) != 1:
+                raise ReadError("read-only validator returned an unexpected row count")
+            write_outputs(rows, csv_path, snapshot_path)
+            # The shared writer intentionally owns validation semantics; rewrite
+            # only its CSV line endings atomically for stable Git text evidence.
+            _atomic_write_csv(csv_path, LIVE_VALIDATION_FIELDS, rows)
+            if rows[0]["validation_status"] == "ready":
+                _atomic_write_csv(
+                    manifest_path, EXECUTION_MANIFEST_FIELDS,
+                    [_execution_manifest_row(article, rows[0], source)])
+        except (SafetyError, OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ReadError(f"validate-live operation failed: {error}") from error
+        result = _record_validation_locked(root, post_id, relative_csv)
         return {
-            "schema_version": SCHEMA_VERSION, "changed": True,
-            "workflow_status": new_status, "validation_passed": passed,
-            "failure_reasons": reasons, "chinese_post_id": int(post_id),
-            "integrity_ok": True,
+            **result, "mode": "live-readonly",
+            "validation_file": relative_csv,
+            "snapshot_file": _relative(snapshot_path, root),
+            "execution_manifest": (
+                _relative(manifest_path, root) if manifest_path.exists() else None),
+            "wordpress_writes": 0, "glm_calls": 0, "translation_calls": 0,
         }
+
+
+def _manifest_for(root, state):
+    path = _validation_paths(
+        root, state["batch_id"], state["chinese_post_id"])[2]
+    if not path.is_file():
+        return None
+    return _relative(path, root)
 
 
 def plan_run(root):
@@ -1483,15 +1674,12 @@ def plan_run(root):
                     "completed execution evidence already exists"
                     if execution["status"] == "completed"
                     else f"unsafe existing execution status: {execution['status']}")
+            manifest = _manifest_for(root, state)
             plans.append({
                 "batch_id": batch["batch_id"],
                 "post_id": article["chinese_post_id"],
                 "english_post_id": article["english_post_id"],
-                "execution_candidate_path": (
-                    f"data/analysis/syntaxhighlighter-migration-batch-"
-                    f"{batch['batch_id'].removeprefix('syntaxhighlighter-')}"
-                    "-execution-candidates.csv"
-                ),
+                "execution_candidate_path": manifest,
                 "future_arguments": [
                     "--post-id", str(article["chinese_post_id"]), "--execute"],
                 "validation_evidence": state.get("validation_evidence"),
@@ -1507,9 +1695,383 @@ def plan_run(root):
     }
 
 
+EXECUTION_STATUS_MAP = {
+    "completed": "completed",
+    "excerpt_rejected": "excerpt_failed",
+    "chinese_excerpt_saved": "ready_for_translation_resume",
+    "translation_started": "ready_for_translation_resume",
+    "translation_failed": "translation_failed",
+    "prepared": "blocked",
+    "excerpt_generated": "blocked",
+    "failed": "blocked",
+    "pending": "blocked",
+}
+
+
+def _execution_path(root, post_id):
+    return root / "data/backups/single-candidate" / (
+        f"chinese-{int(post_id)}.execution.json")
+
+
+def _execution_details(root, article):
+    path = _execution_path(root, article["chinese_post_id"])
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ReadError(f"{path}: invalid execution JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ReadError(f"{path}: execution JSON must be an object")
+    chinese_id = _positive_id(value, "chinese_post_id", path, 1)
+    english_id = _positive_id(value, "english_post_id", path, 1)
+    if chinese_id != article["chinese_post_id"]:
+        raise ReadError(f"{path}: execution Chinese post ID mismatch")
+    if english_id != article["english_post_id"]:
+        raise ReadError(f"{path}: execution English post ID mismatch")
+    status = value.get("status")
+    if status not in EXECUTION_STATUS_MAP:
+        raise ReadError(f"{path}: unsupported execution status {status!r}")
+    return {
+        "chinese_post_id": chinese_id, "english_post_id": english_id,
+        "status": status, "source_file": _relative(path, root),
+        "sha256": _file_sha256(path),
+    }
+
+
+def _apply_execution_state(root, state, execution, reason):
+    new_status = EXECUTION_STATUS_MAP[execution["status"]]
+    if state["workflow_status"] == "completed":
+        return False
+    if state["workflow_status"] == new_status:
+        evidence = state.get("execution_evidence") or {}
+        if evidence.get("sha256") == execution["sha256"]:
+            return False
+    previous = state["workflow_status"]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    state["workflow_status"] = new_status
+    state["execution_evidence"] = {
+        "source_file": execution["source_file"],
+        "sha256": execution["sha256"],
+        "status": execution["status"],
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "execution_state_synchronized", state, previous, new_status, reason,
+        state["execution_evidence"], timestamp,
+        f"{execution['sha256']}|{new_status}",
+    )
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+    return True
+
+
+def sync_execution(root, apply=False):
+    root, batches, fixed, _, states = _context(root)
+    actions = []
+    for batch in batches:
+        for article in batch["articles"]:
+            state = states.get(article["chinese_post_id"])
+            execution = _execution_details(root, article)
+            if state is None or execution is None:
+                continue
+            if state["workflow_status"] == "completed":
+                continue
+            actions.append({
+                "batch_id": batch["batch_id"],
+                "post_id": article["chinese_post_id"],
+                "previous_status": state["workflow_status"],
+                "execution_status": execution["status"],
+                "new_status": EXECUTION_STATUS_MAP[execution["status"]],
+                "execution": execution,
+            })
+    if not apply:
+        return {
+            "schema_version": SCHEMA_VERSION, "mode": "preview",
+            "repository_root": str(root), "planned_count": len(actions),
+            "changed_count": 0, "items": actions, "writes_performed": False,
+            "integrity_ok": True,
+        }
+    changed = 0
+    with InitLock(root):
+        root, _, fixed, _, states = _context(root)
+        for action in actions:
+            article = fixed[action["post_id"]]
+            execution = _execution_details(root, article)
+            if execution is None:
+                continue
+            changed += int(_apply_execution_state(
+                root, states[action["post_id"]], execution,
+                "synchronized from existing single-candidate execution evidence"))
+    return {
+        "schema_version": SCHEMA_VERSION, "mode": "apply",
+        "repository_root": str(root), "planned_count": len(actions),
+        "changed_count": changed, "items": actions,
+        "writes_performed": bool(changed), "integrity_ok": True,
+    }
+
+
+def _validation_still_valid(root, state):
+    evidence = state.get("validation_evidence")
+    if not isinstance(evidence, dict):
+        raise ReadError("validation evidence is missing")
+    path = _safe_repository_path(root, evidence.get("source_file", ""))
+    if _file_sha256(path) != evidence.get("sha256"):
+        raise ReadError(f"{path}: validation evidence SHA-256 drift")
+
+
+def _record_attempt_start(root, state, stage):
+    attempts = dict(state.get("retry_counts") or {})
+    attempt = int(attempts.get(stage, 0)) + 1
+    attempts[stage] = attempt
+    timestamp = datetime.now(timezone.utc).isoformat()
+    previous = state["workflow_status"]
+    state["retry_counts"] = attempts
+    state["workflow_status"] = "execution_in_progress"
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        f"{stage}_attempt_started", state, previous, "execution_in_progress",
+        f"{stage} attempt {attempt} started",
+        {"stage": stage, "attempt": attempt}, timestamp, f"{stage}|{attempt}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+    return attempt
+
+
+def _block_after_operation_error(root, state, stage, attempt, message):
+    previous = state["workflow_status"]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    state["workflow_status"] = "blocked"
+    state["last_failure"] = {
+        "stage": stage, "attempt": attempt, "reason": str(message),
+        "occurred_at": timestamp,
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        f"{stage}_attempt_failed", state, previous, "blocked",
+        "execution subprocess failed without usable execution evidence",
+        {"stage": stage, "attempt": attempt, "error": str(message)},
+        timestamp, f"{stage}|{attempt}|blocked")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+
+
+def _block_retry_exhausted(root, state, stage):
+    previous = state["workflow_status"]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    attempt = int((state.get("retry_counts") or {}).get(stage, 0))
+    state["workflow_status"] = "blocked"
+    state["last_failure"] = {
+        "stage": stage, "attempt": attempt,
+        "reason": f"{stage} retry limit exhausted", "occurred_at": timestamp,
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        f"{stage}_retry_exhausted", state, previous, "blocked",
+        f"{stage} retry limit exhausted",
+        {"stage": stage, "attempt": attempt},
+        timestamp, f"{stage}|retry-exhausted|{attempt}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+
+
+def _executor_command(root, state, *, resume):
+    manifest = _manifest_for(root, state)
+    if manifest is None:
+        raise ReadError("single-candidate execution manifest is missing")
+    command = [
+        sys.executable, str(root / "bin/execute-single-candidate.py"),
+        "--post-id", str(state["chinese_post_id"]),
+        "--manifest", str(root / manifest),
+        "--expected-candidate-count", "1",
+        "--backup-dir", str(root / "data/backups/single-candidate"),
+        "--execute",
+    ]
+    if resume:
+        command.append("--resume")
+    return command
+
+
+def _select_batch(batches, batch_id):
+    if batch_id is None:
+        return batches
+    selected = [item for item in batches if item["batch_id"] == batch_id]
+    if not selected:
+        raise ReadError(f"unknown batch_id: {batch_id}")
+    return selected
+
+
+def _run_items(root, batch_id=None):
+    root, batches, _, executions, states = _context(root)
+    items = []
+    for batch in _select_batch(batches, batch_id):
+        for article in batch["articles"]:
+            state = states.get(article["chinese_post_id"])
+            if not state or state["workflow_status"] != "ready_for_execution":
+                continue
+            reasons = []
+            if executions.get(article["chinese_post_id"]):
+                reasons.append("execution evidence already exists")
+            if _manifest_for(root, state) is None:
+                reasons.append("single-candidate execution manifest is missing")
+            try:
+                _validation_still_valid(root, state)
+            except ReadError as error:
+                reasons.append(str(error))
+            items.append({
+                "batch_id": batch["batch_id"], "post_id": article["chinese_post_id"],
+                "english_post_id": article["english_post_id"],
+                "allowed": not reasons, "blocking_reasons": reasons,
+            })
+    return root, items
+
+
+def run_ready(root, execute=False, batch_id=None, runner=subprocess.run):
+    root, items = _run_items(root, batch_id)
+    if not execute:
+        return {
+            "schema_version": SCHEMA_VERSION, "mode": "preview",
+            "repository_root": str(root), "selected_count": len(items),
+            "allowed_count": sum(item["allowed"] for item in items),
+            "items": items, "writes_performed": False, "integrity_ok": True,
+        }
+    results = []
+    with InitLock(root):
+        root, _, fixed, _, states = _context(root)
+        for item in items:
+            state = states.get(item["post_id"])
+            try:
+                if not item["allowed"] or state["workflow_status"] != "ready_for_execution":
+                    raise ReadError("; ".join(item["blocking_reasons"])
+                                    or "article is no longer ready")
+                _validation_still_valid(root, state)
+                if int((state.get("retry_counts") or {}).get("run", 0)) >= MAX_RUN_ATTEMPTS:
+                    _block_retry_exhausted(root, state, "run")
+                    raise ReadError("run retry limit exhausted")
+                attempt = _record_attempt_start(root, state, "run")
+                completed = runner(
+                    _executor_command(root, state, resume=False),
+                    cwd=root, text=True, capture_output=True, check=False,
+                    timeout=900)
+                execution = _execution_details(root, fixed[item["post_id"]])
+                if execution is None:
+                    raise ReadError(
+                        f"executor exited {completed.returncode} without execution state")
+                _apply_execution_state(
+                    root, state, execution,
+                    f"single-candidate executor exited {completed.returncode}")
+                results.append({**item, "result": execution["status"], "attempt": attempt})
+            except (OSError, subprocess.SubprocessError, ReadError) as error:
+                attempt = int((state.get("retry_counts") or {}).get("run", 0))
+                if state and state["workflow_status"] == "execution_in_progress":
+                    _block_after_operation_error(
+                        root, state, "run", attempt, error)
+                results.append({**item, "result": "blocked", "error": str(error)})
+    return {
+        "schema_version": SCHEMA_VERSION, "mode": "execute",
+        "repository_root": str(root), "selected_count": len(items),
+        "results": results, "writes_performed": bool(items),
+        "integrity_ok": True,
+    }
+
+
+RESUME_STATUSES = {
+    "excerpt_failed", "translation_failed", "ready_for_translation_resume",
+}
+
+
+def _resume_items(root, batch_id=None, post_id=None):
+    root, batches, _, _, states = _context(root)
+    items = []
+    for batch in _select_batch(batches, batch_id):
+        for article in batch["articles"]:
+            if post_id is not None and article["chinese_post_id"] != int(post_id):
+                continue
+            state = states.get(article["chinese_post_id"])
+            if not state or state["workflow_status"] not in RESUME_STATUSES:
+                continue
+            execution = _execution_details(root, article)
+            reasons = []
+            resume_mode = state["workflow_status"] != "excerpt_failed"
+            if execution is None:
+                reasons.append("execution evidence is missing")
+            elif resume_mode and execution["status"] not in {
+                    "chinese_excerpt_saved", "translation_started",
+                    "translation_failed"}:
+                reasons.append(
+                    f"execution status cannot resume: {execution['status']}")
+            if not resume_mode:
+                reasons.append(
+                    "existing executor cannot safely restart excerpt after backup creation")
+            attempts = int((state.get("retry_counts") or {}).get("resume", 0))
+            if attempts >= MAX_RESUME_ATTEMPTS:
+                reasons.append("resume retry limit exhausted")
+            items.append({
+                "batch_id": batch["batch_id"], "post_id": article["chinese_post_id"],
+                "english_post_id": article["english_post_id"],
+                "resume_mode": resume_mode, "attempts": attempts,
+                "allowed": not reasons, "blocking_reasons": reasons,
+            })
+    return root, items
+
+
+def resume(root, execute=False, batch_id=None, post_id=None,
+           runner=subprocess.run):
+    root, items = _resume_items(root, batch_id, post_id)
+    if not execute:
+        return {
+            "schema_version": SCHEMA_VERSION, "mode": "preview",
+            "repository_root": str(root), "selected_count": len(items),
+            "allowed_count": sum(item["allowed"] for item in items),
+            "items": items, "writes_performed": False, "integrity_ok": True,
+        }
+    results = []
+    with InitLock(root):
+        root, _, fixed, _, states = _context(root)
+        for item in items:
+            state = states.get(item["post_id"])
+            try:
+                if not item["allowed"] or state["workflow_status"] not in RESUME_STATUSES:
+                    if "resume retry limit exhausted" in item["blocking_reasons"]:
+                        _block_retry_exhausted(root, state, "resume")
+                    raise ReadError("; ".join(item["blocking_reasons"])
+                                    or "article is no longer resumable")
+                attempt = _record_attempt_start(root, state, "resume")
+                completed = runner(
+                    _executor_command(root, state, resume=True),
+                    cwd=root, text=True, capture_output=True, check=False,
+                    timeout=900)
+                execution = _execution_details(root, fixed[item["post_id"]])
+                if execution is None:
+                    raise ReadError(
+                        f"executor exited {completed.returncode} without execution state")
+                _apply_execution_state(
+                    root, state, execution,
+                    f"single-candidate resume exited {completed.returncode}")
+                results.append({**item, "result": execution["status"], "attempt": attempt})
+            except (OSError, subprocess.SubprocessError, ReadError) as error:
+                attempt = int((state.get("retry_counts") or {}).get("resume", 0))
+                if state and state["workflow_status"] == "execution_in_progress":
+                    _block_after_operation_error(
+                        root, state, "resume", attempt, error)
+                results.append({**item, "result": "blocked", "error": str(error)})
+    return {
+        "schema_version": SCHEMA_VERSION, "mode": "execute",
+        "repository_root": str(root), "selected_count": len(items),
+        "results": results, "writes_performed": bool(items),
+        "integrity_ok": True,
+    }
+
+
 SUMMARY_KEYS = (
     "awaiting_manual_conversion", "awaiting_readonly_validation",
     "validation_failed", "ready_for_execution", "execution_in_progress",
+    "ready_for_translation_resume", "excerpt_failed", "translation_failed",
     "execution_failed", "completed", "blocked",
 )
 
@@ -1517,11 +2079,23 @@ SUMMARY_KEYS = (
 def _summary_bucket(status):
     if status in SUMMARY_KEYS:
         return status
-    if status == "ready_for_translation_resume":
-        return "execution_in_progress"
-    if status in {"excerpt_failed", "translation_failed"}:
-        return "execution_failed"
     return "blocked"
+
+
+def _next_action(counts):
+    if counts["blocked"]:
+        return "需要人工排查 blocked"
+    if counts["ready_for_translation_resume"] or counts["translation_failed"]:
+        return "可以 resume"
+    if counts["ready_for_execution"]:
+        return "可以执行 ready 文章"
+    if counts["awaiting_readonly_validation"]:
+        return "执行生产只读验收"
+    if counts["awaiting_manual_conversion"]:
+        return "继续人工转换"
+    if counts["completed"] == counts["total"]:
+        return "当前批次已完成"
+    return "检查失败文章"
 
 
 def summary(root):
@@ -1531,14 +2105,26 @@ def summary(root):
         counts = Counter({key: 0 for key in SUMMARY_KEYS})
         for article in batch["articles"]:
             state = states.get(article["chinese_post_id"])
-            counts[_summary_bucket(
-                state["workflow_status"] if state else "blocked")] += 1
+            status = _summary_bucket(
+                state["workflow_status"] if state else "blocked")
+            counts[status] += 1
+            if status in {"excerpt_failed", "translation_failed"}:
+                counts["execution_failed"] += 1
         total = len(batch["articles"])
         pending = total - counts["completed"]
+        exhausted = sum(
+            any(int(value) >= (
+                MAX_RESUME_ATTEMPTS if key == "resume" else MAX_RUN_ATTEMPTS)
+                for key, value in (states.get(article["chinese_post_id"], {})
+                                   .get("retry_counts") or {}).items())
+            for article in batch["articles"]
+        )
+        action_counts = {**dict(counts), "total": total}
         results.append({
             "batch_id": batch["batch_id"], "source_file": batch["source_file"],
             "total": total, **dict(counts), "pending": pending,
-            "terminal": pending == 0,
+            "remaining": pending, "retry_exhausted": exhausted,
+            "next_action": _next_action(action_counts), "terminal": pending == 0,
         })
     latest = _latest_coordination_batch(batches, states)
     can_create = latest is None
@@ -1547,7 +2133,8 @@ def summary(root):
         "batches": results,
         "totals": {
             key: sum(item[key] for item in results)
-            for key in ("total",) + SUMMARY_KEYS + ("pending",)
+            for key in ("total",) + SUMMARY_KEYS
+            + ("pending", "remaining", "retry_exhausted")
         },
         "latest_incomplete_batch": latest["batch_id"] if latest else None,
         "can_create_next_batch": can_create,
@@ -1585,6 +2172,18 @@ def render_text(result):
             f"完整性: {'ok' if result['integrity_ok'] else 'error'} "
             f"conflicts={len(result['conflicts'])} errors={len(result['errors'])}"
         ),
+        (
+            f"流程: ready={result['ready_for_execution_count']} "
+            f"in_progress={result['execution_in_progress_count']} "
+            f"translation_resume={result['ready_for_translation_resume_count']} "
+            f"excerpt_failed={result['excerpt_failed_count']} "
+            f"translation_failed={result['translation_failed_count']} "
+            f"validation_failed={result['validation_failed_count']} "
+            f"blocked={result['blocked_count']} "
+            f"remaining={result['remaining_count']} "
+            f"retry_exhausted={result['retry_exhausted_count']}"
+        ),
+        f"下一步: {result['next_action']}",
         "批次:",
     ]
     for batch in result["batches"]:
@@ -1696,9 +2295,14 @@ def render_summary_text(result):
             f"validation_failed={item['validation_failed']} "
             f"ready={item['ready_for_execution']} "
             f"in_progress={item['execution_in_progress']} "
+            f"translation_resume={item['ready_for_translation_resume']} "
+            f"excerpt_failed={item['excerpt_failed']} "
+            f"translation_failed={item['translation_failed']} "
             f"execution_failed={item['execution_failed']} "
             f"completed={item['completed']} blocked={item['blocked']} "
-            f"pending={item['pending']}"
+            f"remaining={item['remaining']} "
+            f"retry_exhausted={item['retry_exhausted']} "
+            f"next_action={item['next_action']}"
         )
     lines.extend([
         f"最新未完成批次: {result['latest_incomplete_batch'] or '无'}",
@@ -1720,6 +2324,30 @@ def render_plan_text(result):
             f"blocked={';'.join(item['blocking_reasons']) or '-'}"
         )
     lines.append("生产调用: 0")
+    return "\n".join(lines)
+
+
+def render_operation_text(result):
+    lines = [
+        f"模式: {result.get('mode', 'operation')}",
+        f"完整性: {'ok' if result['integrity_ok'] else 'error'}",
+    ]
+    for field in (
+            "workflow_status", "selected_count", "allowed_count",
+            "planned_count", "changed_count"):
+        if field in result:
+            lines.append(f"{field}: {result[field]}")
+    if "items" in result:
+        for item in result["items"]:
+            lines.append(
+                f"- {item.get('batch_id')} zh={item.get('post_id')} "
+                f"allowed={item.get('allowed', True)} "
+                f"blocked={';'.join(item.get('blocking_reasons', [])) or '-'}")
+    if "results" in result:
+        for item in result["results"]:
+            lines.append(
+                f"- zh={item['post_id']} result={item['result']} "
+                f"error={item.get('error', '-')}")
     return "\n".join(lines)
 
 
@@ -1767,6 +2395,34 @@ def parse_args(argv=None):
     plan.add_argument("--json", action="store_true", dest="json_output")
     plan.add_argument("--repo-root", type=Path, default=repository_root(),
                       help=argparse.SUPPRESS)
+    live = subparsers.add_parser(
+        "validate-live", help="run production read-only validation for one article")
+    live.add_argument("--post-id", required=True, type=int)
+    live.add_argument("--json", action="store_true", dest="json_output")
+    live.add_argument("--repo-root", type=Path, default=repository_root(),
+                      help=argparse.SUPPRESS)
+    run = subparsers.add_parser(
+        "run-ready", help="preview or execute ready articles in fixed order")
+    run.add_argument("--execute", action="store_true")
+    run.add_argument("--batch-id")
+    run.add_argument("--json", action="store_true", dest="json_output")
+    run.add_argument("--repo-root", type=Path, default=repository_root(),
+                     help=argparse.SUPPRESS)
+    resume_parser = subparsers.add_parser(
+        "resume", help="preview or resume recoverable execution states")
+    resume_parser.add_argument("--execute", action="store_true")
+    resume_parser.add_argument("--batch-id")
+    resume_parser.add_argument("--post-id", type=int)
+    resume_parser.add_argument("--json", action="store_true", dest="json_output")
+    resume_parser.add_argument(
+        "--repo-root", type=Path, default=repository_root(),
+        help=argparse.SUPPRESS)
+    sync = subparsers.add_parser(
+        "sync-execution", help="preview or apply existing execution evidence")
+    sync.add_argument("--apply", action="store_true")
+    sync.add_argument("--json", action="store_true", dest="json_output")
+    sync.add_argument("--repo-root", type=Path, default=repository_root(),
+                      help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -1794,9 +2450,24 @@ def main(argv=None):
         elif args.command == "summary":
             result = summary(args.repo_root)
             output = render_summary_text(result)
-        else:
+        elif args.command == "plan-run":
             result = plan_run(args.repo_root)
             output = render_plan_text(result)
+        elif args.command == "validate-live":
+            result = validate_live(args.repo_root, args.post_id)
+            output = render_operation_text(result)
+        elif args.command == "run-ready":
+            result = run_ready(
+                args.repo_root, execute=args.execute, batch_id=args.batch_id)
+            output = render_operation_text(result)
+        elif args.command == "resume":
+            result = resume(
+                args.repo_root, execute=args.execute, batch_id=args.batch_id,
+                post_id=args.post_id)
+            output = render_operation_text(result)
+        else:
+            result = sync_execution(args.repo_root, apply=args.apply)
+            output = render_operation_text(result)
     except ReadError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return EXIT_INTEGRITY_ERROR
