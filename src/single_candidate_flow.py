@@ -88,7 +88,7 @@ def reconcile_translation_started(row, chinese, english):
     return bool(raw_field(english, "excerpt").strip())
 
 
-def preflight_live_result(row, wp, polylang_checker, config):
+def preflight_live_result(row, wp, polylang_checker, config, resume=False):
     """Perform exactly two GETs and return metadata/hashes only, never post text."""
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     chinese = wp.get_post(zh_id)
@@ -163,6 +163,12 @@ def preflight_live_result(row, wp, polylang_checker, config):
         ),
         "phase1_eligible": eligibility["eligible"],
     }
+    if resume:
+        for name in (
+                "chinese_excerpt_empty", "english_title_sha256_matches",
+                "english_excerpt_sha256_matches",
+                "english_content_sha256_matches"):
+            checks[name] = True
     return {
         "mode": "preflight-live", "chinese_post_id": zh_id, "english_post_id": en_id,
         "returned_ids": {"chinese_correct": chinese.get("id") == zh_id,
@@ -255,7 +261,7 @@ class SingleCandidateFlow:
                 raise SafetyError("saved Chinese excerpt differs from resume state")
             # Resume deliberately does not require the original excerpt-empty check.
             live["chinese_excerpt_empty"] = True
-            failures = validate_live(row, live)
+            failures = validate_live(row, live, resume=True)
             if failures:
                 raise SafetyError("resume live validation failed: " + ",".join(failures))
         else:

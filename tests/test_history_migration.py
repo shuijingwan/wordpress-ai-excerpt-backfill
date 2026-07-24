@@ -985,16 +985,33 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE.init_state(self.root, apply=True)
         self.write_execution(401, 1401, "translation_failed")
         MODULE.sync_execution(self.root, apply=True)
+        self.create_execution_manifest(401)
         preview = MODULE.resume(self.root)
         self.assertEqual([401], [item["post_id"] for item in preview["items"]])
         self.assertTrue(preview["items"][0]["allowed"])
 
+        commands = []
         def runner(command, **kwargs):
+            commands.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.assertIn("--execute", command)
             self.assertIn("--resume", command)
             self.write_execution(401, 1401, "completed")
             return mock.Mock(returncode=0, stdout="{}", stderr="")
 
-        MODULE.resume(self.root, execute=True, runner=runner)
+        result = MODULE.resume(self.root, execute=True, runner=runner)
+        self.assertEqual(2, len(commands))
+        self.assertTrue(all("--resume" in command for command in commands))
+        actual = [command for command in commands if "--execute" in command]
+        self.assertEqual(1, len(actual))
+        self.assertEqual("completed", result["results"][0]["category"])
+        self.assertEqual(0, result["results"][0]["returncode"])
+        self.assertEqual("", result["results"][0]["error"])
+        rendered = MODULE.render_operation_text(result)
+        self.assertNotIn("category=-", rendered)
+        self.assertNotIn("returncode=-", rendered)
+        self.assertNotIn("error=-", rendered)
         self.assertEqual([], MODULE.resume(self.root)["items"])
 
         state_path = MODULE._state_path(
@@ -1040,6 +1057,172 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE._atomic_write_json(state_path, state)
         self.write_execution(401, 1401, "completed")
         self.assertEqual([], MODULE.resume(self.root, post_id=401)["items"])
+
+    def prepare_translation_failed(self, post_id=401):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        self.write_execution(post_id, post_id + 1000, "translation_failed")
+        MODULE.sync_execution(self.root, apply=True)
+        self.create_execution_manifest(post_id)
+        return MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", post_id)
+
+    def resume_runner(self, execute):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            return execute(command, **kwargs)
+
+        return calls, runner
+
+    def test_resume_nonzero_uses_fresh_state_and_records_terminal_failure(self):
+        state_path = self.prepare_translation_failed()
+        calls, runner = self.resume_runner(lambda command, **kwargs: (
+            self.write_execution(401, 1401, "translation_failed"),
+            mock.Mock(returncode=2, stdout="", stderr="resume safety failure"),
+        )[1])
+        result = MODULE.resume(self.root, execute=True, post_id=401, runner=runner)
+        item = result["results"][0]
+        self.assertEqual(2, len(calls))
+        self.assertEqual("translation_failed", item["result"])
+        self.assertEqual("executor_failed_with_state", item["category"])
+        self.assertEqual(2, item["returncode"])
+        self.assertIn("resume safety failure", item["error"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("translation_failed", state["workflow_status"])
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        terminal = [event for event in events
+                    if event["event_type"] == "resume_attempt_failed"]
+        self.assertEqual([1], [event["evidence"]["attempt"] for event in terminal])
+
+    def test_resume_stale_execution_cannot_impersonate_current_result(self):
+        state_path = self.prepare_translation_failed()
+        calls, runner = self.resume_runner(
+            lambda command, **kwargs:
+                mock.Mock(returncode=0, stdout='{"status":"completed"}', stderr=""))
+        result = MODULE.resume(self.root, execute=True, post_id=401, runner=runner)
+        item = result["results"][0]
+        self.assertEqual(2, len(calls))
+        self.assertEqual("blocked", item["result"])
+        self.assertEqual("stale_execution_state", item["category"])
+        self.assertEqual(0, item["returncode"])
+        self.assertIn("did not update", item["error"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+
+    def test_resume_preflight_failure_records_terminal_event(self):
+        state_path = self.prepare_translation_failed()
+        runner = mock.Mock(return_value=mock.Mock(
+            returncode=1, stdout="", stderr="preflight rejected"))
+        result = MODULE.resume(self.root, execute=True, post_id=401, runner=runner)
+        item = result["results"][0]
+        runner.assert_called_once()
+        self.assertEqual("preflight_failed", item["category"])
+        self.assertEqual(1, item["returncode"])
+        self.assertIn("preflight rejected", item["error"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        self.assertEqual(1, sum(
+            event["event_type"] == "resume_attempt_failed" for event in events))
+
+    def test_resume_subprocess_exception_records_terminal_event(self):
+        state_path = self.prepare_translation_failed()
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        result = MODULE.resume(self.root, execute=True, post_id=401, runner=runner)
+        item = result["results"][0]
+        self.assertEqual(2, len(calls))
+        self.assertEqual("transient_network_error", item["category"])
+        self.assertEqual(-1, item["returncode"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        started = [event["evidence"]["attempt"] for event in events
+                   if event["event_type"] == "resume_attempt_started"]
+        failed = [event["evidence"]["attempt"] for event in events
+                  if event["event_type"] == "resume_attempt_failed"]
+        self.assertEqual(started, failed)
+
+    def test_reconcile_orphaned_resume_attempts_preview_apply_and_scope(self):
+        state_path = self.prepare_translation_failed()
+        other_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402)
+        other_before = other_path.read_bytes()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        for _ in range(3):
+            MODULE._record_attempt_start(self.root, state, "resume")
+            state["workflow_status"] = "translation_failed"
+            MODULE._atomic_write_json(state_path, state)
+
+        before = self.snapshot()
+        preview = MODULE.reconcile_attempts(self.root, 401)
+        self.assertEqual([1, 2, 3], preview["items"][0]["orphaned_attempts"])
+        self.assertEqual(3, preview["items"][0]["current_resume_count"])
+        self.assertEqual(0, preview["items"][0]["corrected_resume_count"])
+        self.assertEqual(before, self.snapshot())
+
+        applied = MODULE.reconcile_attempts(self.root, 401, apply=True)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(0, state["retry_counts"]["resume"])
+        self.assertEqual(other_before, other_path.read_bytes())
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        audit = [event for event in events
+                 if event["event_type"] == "resume_orphaned_attempts_reconciled"]
+        self.assertEqual(1, len(audit))
+        self.assertEqual([1, 2, 3], audit[0]["evidence"]["orphaned_attempts"])
+        repeated = MODULE.reconcile_attempts(self.root, 401, apply=True)
+        self.assertFalse(repeated["changed"])
+
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        next_attempt = MODULE._record_attempt_start(self.root, state, "resume")
+        self.assertEqual(4, next_attempt)
+        self.assertEqual(1, state["retry_counts"]["resume"])
+
+    def test_reconcile_preserves_terminated_failures_and_skips_completed(self):
+        state_path = self.prepare_translation_failed()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        attempt = MODULE._record_attempt_start(self.root, state, "resume")
+        failure = {
+            "category": "preflight_failed", "returncode": 1,
+            "stderr_summary": "rejected", "stdout_summary": "",
+        }
+        MODULE._block_after_operation_error(
+            self.root, state, "resume", attempt, failure)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "translation_failed"
+        MODULE._atomic_write_json(state_path, state)
+        MODULE._record_attempt_start(self.root, state, "resume")
+        state["workflow_status"] = "translation_failed"
+        MODULE._atomic_write_json(state_path, state)
+
+        applied = MODULE.reconcile_attempts(self.root, 401, apply=True)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, state["retry_counts"]["resume"])
+
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        self.write_execution(401, 1401, "completed")
+        before = self.snapshot()
+        result = MODULE.reconcile_attempts(self.root, 401, apply=True)
+        self.assertFalse(result["eligible"])
+        self.assertIn("completed article", result["blocking_reasons"][0])
+        self.assertEqual(before, self.snapshot())
 
     def test_new_json_commands_are_valid_and_read_only(self):
         self.prepare_init_fixture()

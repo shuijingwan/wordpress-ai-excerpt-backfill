@@ -98,7 +98,7 @@ def validate_manifest(rows, expected_count=EXPECTED_CANDIDATES):
     return True
 
 
-def validate_live(row, live):
+def validate_live(row, live, resume=False):
     """Return reasons; never search for a replacement when validation fails."""
     checks = (
         (live.get("chinese_exists") is True, "chinese_missing"),
@@ -115,7 +115,16 @@ def validate_live(row, live):
         (live.get("english_excerpt_sha256") == row["english_excerpt_sha256"], "english_excerpt_changed"),
         (live.get("english_content_sha256") == row["english_content_sha256"], "english_content_changed"),
     )
-    return [reason for passed, reason in checks if not passed]
+    resume_expected_changes = {
+        "chinese_excerpt_not_empty",
+        "english_title_changed",
+        "english_excerpt_changed",
+        "english_content_changed",
+    }
+    return [
+        reason for passed, reason in checks
+        if not passed and not (resume and reason in resume_expected_changes)
+    ]
 
 
 def dry_run(manifest_rows, snapshot_by_id, protected_ids=()):

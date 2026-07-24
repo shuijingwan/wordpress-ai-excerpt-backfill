@@ -110,6 +110,16 @@ class PreflightLiveTest(unittest.TestCase):
                 self.assertFalse(result["preflight_passed"])
                 self.assertFalse(result["structure"]["phase1_eligible"])
 
+    def test_resume_preflight_allows_expected_excerpt_and_english_changes(self):
+        source = MockWp()
+        source.posts[1]["excerpt"]["raw"] = "已保存摘要"
+        source.posts[1001]["title"]["raw"] = "Translated title"
+        source.posts[1001]["excerpt"]["raw"] = "Translated excerpt"
+        source.posts[1001]["content"]["raw"] = "Translated content"
+        result = preflight_live_result(
+            rows()[0], source, Polylang(), CONFIG, resume=True)
+        self.assertTrue(result["preflight_passed"])
+
     def test_cli_preflight_does_not_construct_glm_or_translator_or_write_files(self):
         manifest_rows = rows()
         with tempfile.TemporaryDirectory() as directory:

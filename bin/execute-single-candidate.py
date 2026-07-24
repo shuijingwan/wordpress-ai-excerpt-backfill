@@ -31,8 +31,8 @@ def parse_args(argv=None):
     parser.add_argument("--expected-candidate-count", type=int, default=42)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUPS)
     args = parser.parse_args(argv)
-    if args.resume and not args.execute:
-        parser.error("--resume requires --execute")
+    if args.resume and not (args.execute or args.preflight_live):
+        parser.error("--resume requires --execute or --preflight-live")
     if args.expected_candidate_count < 1:
         parser.error("--expected-candidate-count must be positive")
     return args
@@ -52,7 +52,9 @@ def main(argv=None):
         from src.single_candidate_flow import preflight_live_result
         from src.wordpress_clients import WordPressRestClient
         config = json.loads((ROOT / "config/classification.json").read_text(encoding="utf-8"))
-        result = preflight_live_result(row, WordPressRestClient(), PolylangSshChecker(), config)
+        result = preflight_live_result(
+            row, WordPressRestClient(), PolylangSshChecker(), config,
+            resume=args.resume)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["preflight_passed"] else 1
     if not args.execute:
