@@ -280,6 +280,17 @@ class HistoryMigrationStatusTest(unittest.TestCase):
     def status(self):
         return MODULE.build_status(self.root)
 
+    def write_priority_batch(self, pairs):
+        path, _ = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260724-01.csv",
+            pairs, sequence=3)
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        for row in rows:
+            row["batch_id"] = "syntaxhighlighter-priority-20260724-01"
+        self.write_csv(path, SYNTAX_FIELDS, rows)
+        return path
+
     def test_reads_valid_fixed_batch_and_preserves_order(self):
         pairs = [(303, 1303), (301, 1301), (302, 1302)]
         pairs.extend((value, value + 1000) for value in range(304, 321))
@@ -414,6 +425,80 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertFalse(result["integrity_ok"])
         self.assertTrue(any("expected 20 fixed articles, found 1" in item
                             for item in result["errors"]))
+
+    def test_explicit_five_article_batch_count_is_strict(self):
+        pairs = [(value, value + 1000) for value in range(501, 506)]
+        path = self.write_priority_batch(pairs)
+        result = self.status()
+        self.assertTrue(result["integrity_ok"])
+        batch = next(item for item in MODULE.discover_batches(self.root, [])
+                     if item["batch_id"]
+                     == "syntaxhighlighter-priority-20260724-01")
+        self.assertEqual(5, batch["expected_count"])
+
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.write_csv(path, SYNTAX_FIELDS, rows[:-1])
+        result = self.status()
+        self.assertTrue(any("expected 5 fixed articles, found 4" in error
+                            for error in result["errors"]))
+
+        rows.append({
+            **rows[-1], "chinese_post_id": 506, "english_post_id": 1506,
+        })
+        self.write_csv(path, SYNTAX_FIELDS, rows)
+        result = self.status()
+        self.assertTrue(any("expected 5 fixed articles, found 6" in error
+                            for error in result["errors"]))
+
+    def test_existing_expected_counts_and_default_twenty_are_unchanged(self):
+        self.assertEqual(42, self.original_legacy_count)
+        self.assertEqual(1, MODULE.PILOT_BATCH["expected_count"])
+        self.assertEqual(20, MODULE.DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT)
+        self.assertEqual(
+            20, MODULE.SYNTAX_BATCH_EXPECTED_COUNTS[
+                "syntaxhighlighter-20260722-01"])
+        pairs = [(value, value + 1000) for value in range(601, 620)]
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260725-01.csv",
+            pairs, sequence=4)
+        result = self.status()
+        self.assertTrue(any("expected 20 fixed articles, found 19" in error
+                            for error in result["errors"]))
+
+    def test_priority_batch_init_mark_and_validate_live(self):
+        pairs = [(value, value + 1000) for value in range(501, 506)]
+        self.write_priority_batch(pairs)
+        self.write_execution(100, 1100)
+        self.write_execution(200, 1200)
+        result = MODULE.init_state(self.root, apply=True)
+        self.assertEqual(7, result["created_count"])
+        self.assertTrue(all(
+            MODULE._state_path(
+                self.root, "syntaxhighlighter-priority-20260724-01", post_id
+            ).is_file()
+            for post_id in range(501, 506)))
+        state = MODULE.mark_converted(self.root, 501, 1, 1, True)
+        self.assertEqual("awaiting_readonly_validation", state["workflow_status"])
+        row = self.validation_row(
+            batch_id="syntaxhighlighter-priority-20260724-01",
+            batch_sequence=3, chinese_post_id=501, english_post_id=1501,
+            chinese_title="标题 501")
+        source = self.fake_source()
+        source.posts[501] = {
+            **source.posts.pop(401), "id": 501,
+            "title": {"raw": "标题 501"},
+        }
+        source.posts[1501] = {**source.posts.pop(1401), "id": 1501}
+        (self.root / "config").mkdir()
+        (self.root / "config/classification.json").write_text(
+            "{}", encoding="utf-8")
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[row]):
+            validated = MODULE.validate_live(
+                self.root, 501, source_factory=lambda rows: source)
+        self.assertEqual("ready_for_execution", validated["workflow_status"])
 
     def test_json_output_is_valid_and_incomplete_is_success(self):
         output = io.StringIO()

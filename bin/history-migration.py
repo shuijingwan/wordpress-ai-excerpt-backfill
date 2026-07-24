@@ -67,6 +67,12 @@ PILOT_BATCH = {
     "expected_count": 1,
 }
 SYNTAX_GLOB = "syntaxhighlighter-migration-batch-*.csv"
+DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT = 20
+SYNTAX_BATCH_EXPECTED_COUNTS = {
+    "syntaxhighlighter-20260722-01": 20,
+    "syntaxhighlighter-20260723-01": 20,
+    "syntaxhighlighter-priority-20260724-01": 5,
+}
 SYNTAX_FIXED_FIELDS = {
     "schema_version", "batch_id", "batch_sequence", "allocated_at",
     "chinese_post_id", "english_post_id", "chinese_title", "published_at",
@@ -196,11 +202,13 @@ def _load_syntax_batch(path, root):
         raise ReadError(f"{path}: allocated_at must be non-empty and identical in every row")
     articles = [_article(row, position, path, root)
                 for position, row in enumerate(rows, 1)]
+    batch_id = next(iter(batch_ids))
     return {
-        "batch_id": next(iter(batch_ids)),
+        "batch_id": batch_id,
         "source_file": _relative(path, root),
         "source_type": "syntaxhighlighter_daily",
-        "expected_count": 20,
+        "expected_count": SYNTAX_BATCH_EXPECTED_COUNTS.get(
+            batch_id, DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT),
         "batch_sequence": sequence,
         "allocated_at": next(iter(allocated)),
         "articles": articles,
