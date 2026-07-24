@@ -168,7 +168,9 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual([(1, 1001)] * 3, resume_polylang.calls)
 
     def test_all_translation_resume_states_accept_no_glm_client(self):
-        for resume_status in ("chinese_excerpt_saved", "translation_started", "translation_failed"):
+        for resume_status in (
+                "excerpt_generated", "chinese_excerpt_saved",
+                "translation_started", "translation_failed"):
             with self.subTest(status=resume_status), tempfile.TemporaryDirectory() as directory:
                 wp = MockWp(); initial_glm = MockGlm()
                 initial = SingleCandidateFlow(rows(), wp, initial_glm, MockTranslator(wp, fail=True),
@@ -401,6 +403,30 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(0, resume_translator.calls)
             retry_glm = MockGlm()
             retry, _, _, _, _ = self.make_flow(directory, wp, retry_glm, MockTranslator(wp))
+            self.assertEqual("completed", retry.execute(1)["status"])
+            self.assertEqual(1, retry_glm.calls)
+
+    def test_regular_retry_can_restart_from_excerpt_generated_before_wp_write(self):
+        class FailingWriteWp(MockWp):
+            def update_excerpt(self, post_id, excerpt):
+                raise OSError("local mock write interruption")
+
+        with tempfile.TemporaryDirectory() as directory:
+            failed_wp = FailingWriteWp()
+            flow, _, _, _, _ = self.make_flow(
+                directory, failed_wp, MockGlm(), MockTranslator(failed_wp))
+            with self.assertRaises(OSError):
+                flow.execute(1)
+            state_path = Path(directory) / "chinese-1.execution.json"
+            self.assertEqual(
+                "excerpt_generated",
+                json.loads(state_path.read_text(encoding="utf-8"))["status"])
+            self.assertEqual("", failed_wp.posts[1]["excerpt"]["raw"])
+
+            retry_wp = MockWp()
+            retry_glm = MockGlm()
+            retry, _, _, _, _ = self.make_flow(
+                directory, retry_wp, retry_glm, MockTranslator(retry_wp))
             self.assertEqual("completed", retry.execute(1)["status"])
             self.assertEqual(1, retry_glm.calls)
 

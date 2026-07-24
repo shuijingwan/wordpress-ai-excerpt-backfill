@@ -981,7 +981,127 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         self.assertEqual("completed", state["workflow_status"])
         self.assertEqual("completed", result["results"][0]["result"])
+        self.assertEqual("completed", result["results"][0]["category"])
+        self.assertEqual(0, result["results"][0]["returncode"])
+        self.assertEqual("", result["results"][0]["error"])
         self.assertEqual([], MODULE.run_ready(self.root)["items"])
+
+    def test_run_ready_intermediate_states_fail_continue_and_report_progress(self):
+        self.prepare_converted()
+        for post_id in (401, 402, 403):
+            if post_id != 401:
+                MODULE.mark_converted(self.root, post_id, 1, 1, True)
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"progress-validation-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+        statuses = {401: "prepared", 402: "excerpt_generated", 403: "completed"}
+        progress = []
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            post_id = int(command[command.index("--post-id") + 1])
+            self.write_execution(post_id, post_id + 1000, statuses[post_id])
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            progress=lambda *values: progress.append(values))
+        self.assertEqual(
+            ["prepared", "excerpt_generated", "completed"],
+            [item["result"] for item in result["results"]])
+        self.assertEqual(
+            ["incomplete_execution_state", "incomplete_execution_state", "completed"],
+            [item["category"] for item in result["results"]])
+        self.assertEqual([0, 0, 0],
+                         [item["returncode"] for item in result["results"]])
+        self.assertTrue(all("error" in item for item in result["results"]))
+        self.assertEqual(
+            [("start", 1, 3), ("finish", 1, 3),
+             ("start", 2, 3), ("finish", 2, 3),
+             ("start", 3, 3), ("finish", 3, 3)],
+            [(kind, index, total)
+             for kind, index, total, _, _ in progress])
+        rendered = [
+            MODULE.render_run_progress(*values) for values in progress]
+        self.assertTrue(rendered[0].startswith("[1/3] 开始处理"))
+        self.assertTrue(rendered[2].startswith("[2/3] 开始处理"))
+        self.assertTrue(rendered[4].startswith("[3/3] 开始处理"))
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        started = {
+            (event["chinese_post_id"], event["evidence"]["attempt"])
+            for event in events if event["event_type"] == "run_attempt_started"}
+        terminal = {
+            (event["chinese_post_id"], event["evidence"]["attempt"])
+            for event in events if event["event_type"] in {
+                "run_attempt_completed", "run_attempt_failed"}
+        }
+        self.assertEqual(started, terminal)
+
+    def test_run_ready_cli_progress_prints_with_flush(self):
+        item = {
+            "batch_id": "batch", "post_id": 401, "english_post_id": 1401,
+            "allowed": True, "blocking_reasons": [],
+        }
+        completed = {
+            **item, "result": "completed", "category": "completed",
+            "returncode": 0, "error": "",
+        }
+        result = {
+            "schema_version": 1, "mode": "execute",
+            "repository_root": str(self.root), "selected_count": 1,
+            "results": [completed], "writes_performed": True,
+            "integrity_ok": True,
+        }
+
+        def fake_run(root, execute, batch_id, progress):
+            progress("start", 1, 1, item, None)
+            progress("finish", 1, 1, item, completed)
+            return result
+
+        with mock.patch.object(MODULE, "run_ready", side_effect=fake_run), \
+                mock.patch("builtins.print") as printer:
+            self.assertEqual(0, MODULE.main([
+                "run-ready", "--execute", "--repo-root", str(self.root)]))
+        progress_calls = [
+            call for call in printer.call_args_list
+            if call.kwargs.get("flush") is True]
+        self.assertEqual(2, len(progress_calls))
+        self.assertIn("[1/1] 开始处理", progress_calls[0].args[0])
+        self.assertIn("[1/1] 处理完成", progress_calls[1].args[0])
+
+    def test_run_ready_rejects_unchanged_execution_state(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["recovery"] = {
+            "status": "applied", "stage": "run", "action": "restart",
+        }
+        execution_path = self.write_execution(401, 1401, "prepared")
+        execution = MODULE._execution_details(
+            self.root, {"chinese_post_id": 401, "english_post_id": 1401})
+        state["recovery"]["execution_sha256"] = execution["sha256"]
+        MODULE._atomic_write_json(state_path, state)
+
+        def runner(command, **kwargs):
+            return mock.Mock(returncode=0, stdout="{}", stderr="")
+
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        item = result["results"][0]
+        self.assertEqual("stale_execution_state", item["category"])
+        self.assertEqual(0, item["returncode"])
+        self.assertIn("did not update", item["error"])
+        self.assertTrue(execution_path.is_file())
 
     def test_run_ready_failure_isolated_and_maps_excerpt_failure(self):
         self.prepare_converted()
@@ -1007,6 +1127,9 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         result = MODULE.run_ready(self.root, execute=True, runner=runner)
         self.assertEqual(2, len(result["results"]))
+        self.assertEqual(2, result["results"][0]["returncode"])
+        self.assertNotEqual("-", result["results"][0]["category"])
+        self.assertIn("error", result["results"][0])
         states = {
             post_id: json.loads(MODULE._state_path(
                 self.root, "syntaxhighlighter-20260723-01", post_id
@@ -1015,6 +1138,90 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         }
         self.assertEqual("excerpt_failed", states[401])
         self.assertEqual("completed", states[402])
+
+    def test_reconcile_orphaned_run_intermediate_states_and_scope(self):
+        self.prepare_converted()
+        for post_id in (401, 402):
+            if post_id == 402:
+                MODULE.mark_converted(self.root, 402, 1, 1, True)
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"reconcile-run-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+        other_before = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402).read_bytes()
+
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        MODULE._record_attempt_start(self.root, state, "run")
+        self.write_execution(401, 1401, "prepared")
+        execution = MODULE._execution_details(
+            self.root, {"chinese_post_id": 401, "english_post_id": 1401})
+        MODULE._apply_execution_state(
+            self.root, state, execution, "legacy incomplete run")
+
+        before = self.snapshot()
+        preview = MODULE.reconcile_attempts(self.root, 401, stage="run")
+        self.assertTrue(preview["eligible"])
+        self.assertEqual("ready_for_execution",
+                         preview["items"][0]["target_workflow_status"])
+        self.assertEqual(before, self.snapshot())
+
+        applied = MODULE.reconcile_attempts(
+            self.root, 401, stage="run", apply=True)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual(0, state["retry_counts"]["run"])
+        preview = MODULE.run_ready(self.root)
+        recovered = next(
+            item for item in preview["items"] if item["post_id"] == 401)
+        self.assertTrue(recovered["allowed"])
+        self.assertEqual(other_before, MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402).read_bytes())
+
+    def test_reconcile_excerpt_generated_requires_observation_and_completed_skips(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        MODULE._record_attempt_start(self.root, state, "run")
+        self.write_execution(401, 1401, "excerpt_generated")
+        execution = MODULE._execution_details(
+            self.root, {"chinese_post_id": 401, "english_post_id": 1401})
+        MODULE._apply_execution_state(
+            self.root, state, execution, "legacy incomplete run")
+
+        blocked = MODULE.reconcile_attempts(self.root, 401, stage="run")
+        self.assertFalse(blocked["eligible"])
+        self.assertIn("explicit Chinese excerpt state",
+                      ";".join(blocked["blocking_reasons"]))
+        applied = MODULE.reconcile_attempts(
+            self.root, 401, stage="run", chinese_excerpt_empty=False,
+            apply=True)
+        self.assertTrue(applied["changed"])
+        self.assertEqual(
+            "ready_for_translation_resume",
+            json.loads(state_path.read_text(encoding="utf-8"))["workflow_status"])
+        self.assertTrue(MODULE.resume(self.root, post_id=401)["items"][0]["allowed"])
+
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        self.write_execution(401, 1401, "completed")
+        before = self.snapshot()
+        result = MODULE.reconcile_attempts(
+            self.root, 401, stage="run", apply=True)
+        self.assertFalse(result["eligible"])
+        self.assertEqual(before, self.snapshot())
 
     def test_run_ready_timeout_blocks_one_and_continues(self):
         self.prepare_converted()

@@ -239,7 +239,9 @@ class SingleCandidateFlow:
             if not state_path.is_file():
                 raise SafetyError("resume state does not exist")
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            if state.get("status") not in {"chinese_excerpt_saved", "translation_started", "translation_failed"}:
+            if state.get("status") not in {
+                    "excerpt_generated", "chinese_excerpt_saved",
+                    "translation_started", "translation_failed"}:
                 raise SafetyError("execution state cannot resume from translation stage")
             if state["status"] == "translation_started":
                 expected_excerpt = validate_generated_excerpt(state.get("generated_excerpt"))
@@ -274,7 +276,8 @@ class SingleCandidateFlow:
             backup_path = self.backup_dir / f"chinese-{zh_id}.pre-write.json"
             prior = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
             if prior is not None:
-                if (prior.get("status") not in {"prepared", "excerpt_rejected"}
+                if (prior.get("status") not in {
+                            "prepared", "excerpt_rejected", "excerpt_generated"}
                         or prior.get("chinese_post_id") != zh_id
                         or prior.get("english_post_id") != en_id
                         or not backup_path.is_file()):
