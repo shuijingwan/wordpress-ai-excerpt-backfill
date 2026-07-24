@@ -1013,6 +1013,34 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("blocked", state["workflow_status"])
 
+    def test_resume_attempt_two_allowed_three_blocked_and_completed_excluded(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "translation_failed"
+        state["retry_counts"] = {"resume": 2}
+        MODULE._atomic_write_json(state_path, state)
+        self.write_execution(401, 1401, "translation_failed")
+
+        item = MODULE.resume(self.root, post_id=401)["items"][0]
+        self.assertTrue(item["allowed"])
+        self.assertEqual(2, item["attempts"])
+        self.assertEqual(3, MODULE.MAX_RESUME_ATTEMPTS)
+        self.assertEqual(2, MODULE.MAX_RUN_ATTEMPTS)
+
+        state["retry_counts"]["resume"] = 3
+        MODULE._atomic_write_json(state_path, state)
+        item = MODULE.resume(self.root, post_id=401)["items"][0]
+        self.assertFalse(item["allowed"])
+        self.assertIn("resume retry limit exhausted", item["blocking_reasons"])
+
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        self.write_execution(401, 1401, "completed")
+        self.assertEqual([], MODULE.resume(self.root, post_id=401)["items"])
+
     def test_new_json_commands_are_valid_and_read_only(self):
         self.prepare_init_fixture()
         MODULE.init_state(self.root, apply=True)

@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import time
 
 from src.candidate_execution import SafetyError
 
@@ -52,24 +53,45 @@ file_put_contents('php://stdout', $json . PHP_EOL);
 
 
 class PolylangSshChecker:
-    def __init__(self, runner=subprocess.run, timeout=30):
+    def __init__(self, runner=subprocess.run, timeout=30, max_attempts=2,
+                 retry_delay=2, sleeper=time.sleep):
         self.runner = runner
         self.timeout = timeout
+        self.max_attempts = max_attempts
+        self.retry_delay = retry_delay
+        self.sleeper = sleeper
 
     def check(self, chinese_post_id, english_post_id):
         if (type(chinese_post_id) is not int or type(english_post_id) is not int
                 or chinese_post_id < 1 or english_post_id < 1):
             raise SafetyError("Polylang check IDs must be positive manifest integers")
         php = PHP_TEMPLATE % (chinese_post_id, english_post_id)
-        try:
-            completed = self.runner(
-                SSH_COMMAND, input=php, text=True, capture_output=True,
-                timeout=self.timeout, check=False, shell=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise SafetyError("read-only Polylang SSH check timed out") from error
-        except OSError as error:
-            raise SafetyError(f"read-only Polylang SSH check failed: {type(error).__name__}") from error
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                completed = self.runner(
+                    SSH_COMMAND, input=php, text=True, capture_output=True,
+                    timeout=self.timeout, check=False, shell=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                if attempt == self.max_attempts:
+                    raise SafetyError(
+                        f"read-only Polylang SSH check timed out after {attempt} attempts"
+                    ) from error
+            except OSError as error:
+                if attempt == self.max_attempts:
+                    raise SafetyError(
+                        "read-only Polylang SSH check failed after "
+                        f"{attempt} attempts: {type(error).__name__}"
+                    ) from error
+            else:
+                if completed.returncode != 255:
+                    break
+                if attempt == self.max_attempts:
+                    raise SafetyError(
+                        "read-only Polylang SSH check exited with 255 after "
+                        f"{attempt} attempts"
+                    )
+            self.sleeper(self.retry_delay)
         if completed.returncode != 0:
             raise SafetyError(f"read-only Polylang SSH check exited with {completed.returncode}")
         output = completed.stdout.strip()

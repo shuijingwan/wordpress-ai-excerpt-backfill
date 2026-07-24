@@ -11,7 +11,7 @@ import subprocess
 
 from src.candidate_execution import SafetyError
 from src.polylang_ssh import PolylangSshChecker
-from src.single_candidate_flow import preflight_live_result
+from src.single_candidate_flow import preflight_live_result, validate_polylang
 from src.wordpress_clients import WordPressRestClient
 from tests.test_single_candidate_flow import CONFIG, CONTENT, MockWp, rows
 
@@ -154,6 +154,7 @@ class PolylangSshCheckerTest(unittest.TestCase):
         self.assertIs(False, kwargs["shell"])
         self.assertIn("$zh_id = 17374;", kwargs["input"])
         self.assertIn("$en_id = 17442;", kwargs["input"])
+        self.assertEqual(30, kwargs["timeout"])
 
     def test_rejects_non_integer_ids(self):
         runner = mock.Mock()
@@ -162,15 +163,95 @@ class PolylangSshCheckerTest(unittest.TestCase):
                 PolylangSshChecker(runner=runner).check(value, 17442)
         runner.assert_not_called()
 
-    def test_timeout_nonzero_and_non_json_fail(self):
+    def test_timeout_then_success_retries_once_with_testable_delay(self):
+        runner = mock.Mock(side_effect=[
+            subprocess.TimeoutExpired(["ssh"], 30),
+            self.completed(self.valid_json()),
+        ])
+        sleeper = mock.Mock()
+        result = PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        self.assertEqual(17442, result["english_post_id"])
+        self.assertEqual(2, runner.call_count)
+        sleeper.assert_called_once_with(2)
+        self.assertEqual([30, 30], [call.kwargs["timeout"] for call in runner.call_args_list])
+
+    def test_oserror_then_success_retries(self):
+        runner = mock.Mock(side_effect=[
+            OSError("connection reset"),
+            self.completed(self.valid_json()),
+        ])
+        sleeper = mock.Mock()
+        PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        self.assertEqual(2, runner.call_count)
+        sleeper.assert_called_once_with(2)
+
+    def test_ssh_255_then_success_retries(self):
+        runner = mock.Mock(side_effect=[
+            self.completed("", returncode=255),
+            self.completed(self.valid_json()),
+        ])
+        sleeper = mock.Mock()
+        PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        self.assertEqual(2, runner.call_count)
+        sleeper.assert_called_once_with(2)
+
+    def test_two_timeouts_report_attempt_count(self):
+        runner = mock.Mock(side_effect=[
+            subprocess.TimeoutExpired(["ssh"], 30),
+            subprocess.TimeoutExpired(["ssh"], 30),
+        ])
+        sleeper = mock.Mock()
+        with self.assertRaisesRegex(
+                SafetyError, "read-only Polylang SSH check timed out after 2 attempts"):
+            PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        self.assertEqual(2, runner.call_count)
+        sleeper.assert_called_once_with(2)
+
+    def test_invalid_json_and_fields_do_not_retry(self):
         cases = (
-            mock.Mock(side_effect=subprocess.TimeoutExpired(["ssh"], 30)),
-            mock.Mock(return_value=self.completed("", returncode=3)),
-            mock.Mock(return_value=self.completed("notice\n{}")),
+            self.completed("notice\n{}"),
+            self.completed(json.dumps({"chinese_post_id": 17374})),
         )
-        for runner in cases:
-            with self.subTest(runner=runner), self.assertRaises(SafetyError):
-                PolylangSshChecker(runner=runner).check(17374, 17442)
+        for completed in cases:
+            runner = mock.Mock(return_value=completed)
+            sleeper = mock.Mock()
+            with self.subTest(stdout=completed.stdout), self.assertRaises(SafetyError):
+                PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+            runner.assert_called_once()
+            sleeper.assert_not_called()
+
+    def test_invalid_response_ids_and_relation_ids_do_not_retry(self):
+        cases = (
+            self.valid_json(chinese_post_id=999),
+            self.valid_json(linked_english_post_id="17442"),
+            self.valid_json(linked_chinese_post_id=None),
+        )
+        for stdout in cases:
+            runner = mock.Mock(return_value=self.completed(stdout))
+            sleeper = mock.Mock()
+            with self.subTest(stdout=stdout), self.assertRaisesRegex(SafetyError, "IDs"):
+                PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+            runner.assert_called_once()
+            sleeper.assert_not_called()
+
+    def test_polylang_relation_mismatch_is_not_masked_by_retry(self):
+        runner = mock.Mock(return_value=self.completed(
+            self.valid_json(linked_english_post_id=99999)))
+        sleeper = mock.Mock()
+        result = PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        row = {"chinese_post_id": "17374", "english_post_id": "17442"}
+        with self.assertRaisesRegex(SafetyError, "linked_english_post_id"):
+            validate_polylang(row, result)
+        runner.assert_called_once()
+        sleeper.assert_not_called()
+
+    def test_non_transport_ssh_failure_does_not_retry(self):
+        runner = mock.Mock(return_value=self.completed("", returncode=3))
+        sleeper = mock.Mock()
+        with self.assertRaisesRegex(SafetyError, "exited with 3"):
+            PolylangSshChecker(runner=runner, sleeper=sleeper).check(17374, 17442)
+        runner.assert_called_once()
+        sleeper.assert_not_called()
 
 
 if __name__ == "__main__":
