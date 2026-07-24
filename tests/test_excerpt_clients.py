@@ -58,6 +58,17 @@ class GlmClientTest(unittest.TestCase):
         self.assertEqual(512, payload["max_tokens"])
         self.assertNotIn("temperature", payload); self.assertNotIn("top_p", payload)
 
+    def test_initial_prompt_requires_wordpress_ready_plain_paragraph(self):
+        prompt = Glm47ExcerptClient.payload("标题", "正文")["messages"][0]["content"]
+        self.assertIn("连续的中文纯文本段落", prompt)
+        self.assertIn("Markdown", prompt)
+        self.assertIn("项目符号", prompt)
+        self.assertIn("编号列表", prompt)
+        self.assertIn("不换行", prompt)
+        self.assertIn("“摘要：”“文章摘要：”等前缀", prompt)
+        self.assertIn("直接保存到 WordPress post_excerpt", prompt)
+        self.assertIn("不要解释、说明、前言或结语", prompt)
+
     def test_api_key_absent_from_errors(self):
         transport = RecordingTransport({"message": "denied"}, status=401)
         with self.assertRaises(HttpJsonError) as raised:

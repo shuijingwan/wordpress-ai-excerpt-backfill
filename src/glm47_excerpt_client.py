@@ -9,18 +9,19 @@ from src.http_json import HttpJsonError, request_json, urllib_transport
 GLM_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 SYSTEM_PROMPT = """你正在为一篇中文个人技术博客文章编写 WordPress 摘要。
 
-请根据文章标题和正文，生成一段可以直接保存到 WordPress post_excerpt 的中文摘要。
+请根据文章标题和正文，生成一个连续的中文纯文本段落，内容应可直接保存到 WordPress post_excerpt。
 
 要求：
 1. 使用一段完整、自然、克制、可信的中文。
 2. 概括文章解决的问题、主要操作过程和最终结论。
 3. 不添加原文不存在的事实、效果或判断。
 4. 不使用营销腔、夸张表达或第一人称之外的虚构经历。
-5. 不输出标题、编号、列表、Markdown、HTML、Gutenberg 标记或代码块。
+5. 不使用 Markdown、标题、分点、项目符号、编号列表、引用、表格、代码块、HTML 或 Gutenberg 标记。
 6. 不复制长命令、代码、URL、域名或文件路径。
 7. 产品名、插件名和技术名词保持准确。
 8. 目标长度为 160～240 个中文字符。
-9. 只返回摘要正文，不要解释。"""
+9. 不换行，不添加“摘要：”“文章摘要：”等前缀。
+10. 只返回可直接写入摘要字段的正文，不要解释、说明、前言或结语。"""
 
 
 class Glm47ExcerptClient:

@@ -182,7 +182,8 @@ def validate_generated_excerpt(value, minimum=80, maximum=300):
         raise ExcerptValidationError("generated Chinese excerpt contains forbidden markup or payload", value)
     if re.search(r"<[^>]+>|\[[A-Za-z/][^\]]*\]", text):
         raise ExcerptValidationError("generated Chinese excerpt contains HTML or shortcode markup", value)
-    if re.search(r"(^|\s)(?:#{1,6}\s|[-*+]\s|\d+[.)]\s)|[*_]{2}", text):
+    if (re.search(r"(?m)^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)", text)
+            or re.search(r"[*_]{2}", text)):
         raise ExcerptValidationError("generated Chinese excerpt contains Markdown or a list", value)
     return text
 

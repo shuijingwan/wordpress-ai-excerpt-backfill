@@ -8,6 +8,12 @@ from src.candidate_execution import (ExcerptValidationError, SafetyError, author
     backup_record, dry_run, guarded_pipeline, select_inventory_rows, validate_generated_excerpt,
     validate_manifest, write_backup)
 
+POST_9452_EXCERPTS = (
+    "在 VS Code 中按下 Ctrl + S 时文件内容意外被还原，检查设置发现 Editor: Format On Save 已开启，且提示配置已在其他位置修改。经排查，这并非撤销操作，而是 Go 语言的自动格式化工具将代码强制改回了合法状态。将 math.pi 修正为 math.Pi 后，Ctrl + S 即可正常保存文件。",
+    "针对在 VS Code 中按下 Ctrl + S 后文件内容意外还原至上一步而非保存的问题，检查发现 Editor: Format On Save 设置已开启。经排查，该现象并非保存功能异常，而是 Go 语言自动格式化工具在保存时将代码修正为合法状态所致，修正具体写法后即可正常保存。",
+    "在 VS Code 中按下 Ctrl + S 后文件意外还原至修改前状态，经检查发现 Editor: Format On Save 设置已开启。实际操作并非撤销，而是 Go 的自动格式化工具在保存时将代码修正为合法状态。排查发现源码中将 math.pi 改为 math.Pi 后，文件即可正常保存，解决了因格式化规则导致的保存还原问题。",
+)
+
 
 def digest(value="x"):
     return hashlib.sha256(value.encode()).hexdigest()
@@ -136,6 +142,42 @@ class SafetyBoundaryTest(unittest.TestCase):
             validate_generated_excerpt(raw)
         self.assertEqual(raw, raised.exception.raw_excerpt)
         self.assertEqual("generated Chinese excerpt contains Markdown or a list", str(raised.exception))
+
+    def test_plain_single_paragraph_excerpt_is_accepted(self):
+        raw = "这篇文章介绍一个具体技术问题的背景和排查过程，说明关键操作步骤、实施条件及其原因，并依据实际执行结果总结解决方案和注意事项，同时准确保留相关产品与技术名称，避免加入原文没有提及的判断，可直接作为中文摘要保存。"
+        self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_post_9452_real_excerpts_are_accepted(self):
+        for raw in POST_9452_EXCERPTS:
+            with self.subTest(raw=raw):
+                self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_inline_technical_operators_are_not_lists(self):
+        cases = (
+            "文章说明在编辑器中使用 Ctrl + S 保存文件时触发自动格式化的原因，并介绍如何检查配置和修正源码，使文件能够按预期正常保存，同时避免将格式化行为误认为撤销操作。",
+            "文章使用 A + B 表示两个输入值相加，通过完整示例介绍表达式的计算过程、输入条件和输出结果，并说明排查异常结果时需要核对的数据类型与运算顺序，最后根据实际运行结果总结验证方法和相关注意事项。",
+            "文章介绍 C++ 项目的构建配置和故障排查过程，说明编译器选项、依赖关系及源码调整方法，并根据实际构建结果总结解决方案和注意事项，同时给出验证配置是否正确的操作思路和判断依据。",
+            "文章分析 x - y 一类普通减法表达式及带有连字符的技术名称，说明输入数据、计算步骤和验证结果，并总结避免常见配置错误的方法和相关注意事项，帮助读者根据实际输出确认调整是否生效。",
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_markdown_headings_and_lists_are_rejected(self):
+        body = "这篇文章介绍一个具体技术问题的背景和排查过程，说明关键操作步骤及其原因，并依据实际结果总结解决方案，同时准确保留相关产品与技术名称，可直接作为中文摘要保存。"
+        for prefix in ("# ", "- ", "* ", "+ ", "1. ", "1) "):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(
+                    ExcerptValidationError,
+                    "generated Chinese excerpt contains Markdown or a list"):
+                validate_generated_excerpt(prefix + body)
+
+    def test_list_after_newline_and_multiple_paragraphs_are_rejected(self):
+        body = "这篇文章介绍一个具体技术问题的背景和排查过程，说明关键操作步骤及其原因，并依据实际结果总结解决方案，同时准确保留相关产品与技术名称，可直接作为中文摘要保存。"
+        for raw in (body + "\n- 第一项", body + "\n\n另一个段落"):
+            with self.subTest(raw=raw), self.assertRaisesRegex(
+                    ExcerptValidationError,
+                    "generated Chinese excerpt must be one paragraph"):
+                validate_generated_excerpt(raw)
 
     def test_per_post_backup_is_private_atomic_and_not_overwritten(self):
         row = manifest()[0]
