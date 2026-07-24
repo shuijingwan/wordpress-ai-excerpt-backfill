@@ -975,7 +975,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             self.write_execution(401, 1401, "completed")
             return mock.Mock(returncode=0, stdout="{}", stderr="")
 
-        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, max_attempts=1)
         state = json.loads(MODULE._state_path(
             self.root, "syntaxhighlighter-20260723-01", 401
         ).read_text(encoding="utf-8"))
@@ -1010,7 +1011,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         result = MODULE.run_ready(
             self.root, execute=True, runner=runner,
-            progress=lambda *values: progress.append(values))
+            progress=lambda *values: progress.append(values),
+            max_attempts=1)
         self.assertEqual(
             ["prepared", "excerpt_generated", "completed"],
             [item["result"] for item in result["results"]])
@@ -1021,16 +1023,18 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                          [item["returncode"] for item in result["results"]])
         self.assertTrue(all("error" in item for item in result["results"]))
         self.assertEqual(
-            [("start", 1, 3), ("finish", 1, 3),
-             ("start", 2, 3), ("finish", 2, 3),
+            [("start", 1, 3), ("attempt_failed", 1, 3),
+             ("final_failed", 1, 3), ("continue", 1, 3),
+             ("start", 2, 3), ("attempt_failed", 2, 3),
+             ("final_failed", 2, 3), ("continue", 2, 3),
              ("start", 3, 3), ("finish", 3, 3)],
             [(kind, index, total)
              for kind, index, total, _, _ in progress])
         rendered = [
             MODULE.render_run_progress(*values) for values in progress]
         self.assertTrue(rendered[0].startswith("[1/3] 开始处理"))
-        self.assertTrue(rendered[2].startswith("[2/3] 开始处理"))
-        self.assertTrue(rendered[4].startswith("[3/3] 开始处理"))
+        self.assertTrue(any(line.startswith("[2/3] 开始处理") for line in rendered))
+        self.assertTrue(any(line.startswith("[3/3] 开始处理") for line in rendered))
         events = MODULE._read_events(MODULE._events_path(
             self.root, "syntaxhighlighter-20260723-01"))
         started = {
@@ -1075,6 +1079,101 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("[1/1] 开始处理", progress_calls[0].args[0])
         self.assertIn("[1/1] 处理完成", progress_calls[1].args[0])
 
+    def test_run_ready_whole_article_retry_run_then_success(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        executions = 0
+        waits = []
+        progress = []
+
+        def runner(command, **kwargs):
+            nonlocal executions
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            executions += 1
+            status = "prepared" if executions == 1 else "completed"
+            self.write_execution(401, 1401, status)
+            return mock.Mock(
+                returncode=1 if executions == 1 else 0,
+                stdout="", stderr="HTTP Error 400")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, sleeper=waits.append,
+            progress=lambda *values: progress.append(values))
+        self.assertEqual("completed", result["results"][0]["result"])
+        self.assertEqual(2, result["results"][0]["attempts"])
+        self.assertEqual([5], waits)
+        self.assertEqual(2, executions)
+        self.assertEqual(1, result["completed_count"])
+        rendered = [MODULE.render_run_progress(*values) for values in progress]
+        self.assertTrue(any("第 1/3 次失败" in line for line in rendered))
+        self.assertTrue(any("第 2/3 次尝试" in line and "mode=run" in line
+                            for line in rendered))
+
+    def test_run_ready_retry_switches_to_resume(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        execution_commands = []
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_commands.append(command)
+            if len(execution_commands) == 1:
+                self.write_execution(401, 1401, "translation_failed")
+                return mock.Mock(
+                    returncode=1, stdout="", stderr="translation failed")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            sleeper=lambda seconds: None)
+        self.assertEqual("completed", result["results"][0]["result"])
+        self.assertNotIn("--resume", execution_commands[0])
+        self.assertIn("--resume", execution_commands[1])
+
+    def test_run_ready_stops_at_three_and_continues(self):
+        self.prepare_converted()
+        for post_id in (401, 402):
+            if post_id == 402:
+                MODULE.mark_converted(self.root, 402, 1, 1, True)
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"retry-validation-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+        counts = {401: 0, 402: 0}
+        waits = []
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            post_id = int(command[command.index("--post-id") + 1])
+            counts[post_id] += 1
+            status = "prepared" if post_id == 401 else "completed"
+            self.write_execution(post_id, post_id + 1000, status)
+            return mock.Mock(
+                returncode=1 if post_id == 401 else 0,
+                stdout="", stderr="failed")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, sleeper=waits.append)
+        self.assertEqual([3, 1], [counts[401], counts[402]])
+        self.assertEqual([5, 5], waits)
+        self.assertEqual(["prepared", "completed"],
+                         [item["result"] for item in result["results"]])
+        self.assertEqual(1, result["failed_count"])
+        self.assertEqual(0, result["pending_count"])
+
     def test_run_ready_rejects_unchanged_execution_state(self):
         self.prepare_converted()
         path = self.write_record_validation()
@@ -1096,7 +1195,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         def runner(command, **kwargs):
             return mock.Mock(returncode=0, stdout="{}", stderr="")
 
-        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, max_attempts=1)
         item = result["results"][0]
         self.assertEqual("stale_execution_state", item["category"])
         self.assertEqual(0, item["returncode"])
@@ -1582,7 +1682,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                     "SSLEOFError UNEXPECTED_EOF_WHILE_READING "
                     "Authorization: Bearer abc Cookie=session-value"))
 
-        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, max_attempts=1)
         item = result["results"][0]
         state = json.loads(MODULE._state_path(
             self.root, "syntaxhighlighter-20260723-01", 401
@@ -1622,7 +1723,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 returncode=1, stdout="",
                 stderr="URLError: network request failed SSLEOFError")
 
-        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, max_attempts=1)
         state = json.loads(MODULE._state_path(
             self.root, "syntaxhighlighter-20260723-01", 401
         ).read_text(encoding="utf-8"))

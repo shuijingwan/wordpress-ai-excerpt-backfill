@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -42,6 +43,8 @@ COORDINATION_STATUSES = {
 }
 MAX_RUN_ATTEMPTS = 2
 MAX_RESUME_ATTEMPTS = 3
+MAX_ARTICLE_ATTEMPTS = 3
+ARTICLE_RETRY_DELAY = 5
 SUBPROCESS_SUMMARY_LIMIT = 4000
 VALIDATION_ROOT = Path("data/analysis/history-migration-validation")
 EXECUTION_MANIFEST_FIELDS = (
@@ -2115,9 +2118,11 @@ def _run_items(root, batch_id=None):
     return root, items
 
 
-def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
-              progress=None):
+def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
+                    runner=subprocess.run, max_run_attempts=MAX_RUN_ATTEMPTS):
     root, items = _run_items(root, batch_id)
+    if post_id is not None:
+        items = [item for item in items if item["post_id"] == int(post_id)]
     if not execute:
         return {
             "schema_version": SCHEMA_VERSION, "mode": "preview",
@@ -2132,20 +2137,16 @@ def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
         for index, item in enumerate(items, 1):
             state = states.get(item["post_id"])
             attempt = None
-            if progress:
-                progress("start", index, total, item, None)
-
             def finish(result):
                 results.append(result)
-                if progress:
-                    progress("finish", index, total, item, result)
 
             try:
                 if not item["allowed"] or state["workflow_status"] != "ready_for_execution":
                     raise ReadError("; ".join(item["blocking_reasons"])
                                     or "article is no longer ready")
                 _validation_still_valid(root, state)
-                if int((state.get("retry_counts") or {}).get("run", 0)) >= MAX_RUN_ATTEMPTS:
+                if int((state.get("retry_counts") or {}).get(
+                        "run", 0)) >= max_run_attempts:
                     _block_retry_exhausted(root, state, "run")
                     raise ReadError("run retry limit exhausted")
                 try:
@@ -2436,6 +2437,152 @@ def resume(root, execute=False, batch_id=None, post_id=None,
     }
 
 
+def _prepare_article_retry(root, post_id):
+    """Use existing execution evidence to choose and audit the next attempt."""
+    root, _, fixed, _, states = _context(root)
+    article = fixed[int(post_id)]
+    state = states[int(post_id)]
+    execution = _execution_details(root, article)
+    if state["workflow_status"] == "completed" or (
+            execution and execution["status"] == "completed"):
+        if execution and state["workflow_status"] != "completed":
+            _apply_execution_state(root, state, execution,
+                                   "completed while preparing batch retry")
+        return "completed"
+    if execution is None:
+        return (
+            "run"
+            if state["workflow_status"] == "ready_for_execution"
+            and not _execution_artifacts(root, post_id)
+            else None
+        )
+    if execution["status"] in {"prepared", "excerpt_generated"}:
+        mode = "run"
+        target = "ready_for_execution"
+        action = "restart"
+    elif execution["status"] in {
+            "chinese_excerpt_saved", "translation_started",
+            "translation_failed"}:
+        mode = "resume"
+        target = "ready_for_translation_resume"
+        action = "resume"
+    else:
+        return None
+    timestamp = datetime.now(timezone.utc).isoformat()
+    previous = state["workflow_status"]
+    state["workflow_status"] = target
+    if mode == "run":
+        state["recovery"] = {
+            "status": "applied", "stage": "run", "action": action,
+            "execution_status": execution["status"],
+            "execution_sha256": execution["sha256"],
+            "recovered_at": timestamp,
+        }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "run_attempt_retry_prepared", state, previous, target,
+        "prepared next finite whole-article batch attempt",
+        {
+            "next_mode": mode, "execution_status": execution["status"],
+            "execution_sha256": execution["sha256"],
+        },
+        timestamp, f"batch-retry|{mode}|{execution['sha256']}|{timestamp}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return mode
+
+
+def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
+              progress=None, sleeper=time.sleep,
+              max_attempts=MAX_ARTICLE_ATTEMPTS,
+              retry_delay=ARTICLE_RETRY_DELAY):
+    root, items = _run_items(root, batch_id)
+    if not execute:
+        return {
+            "schema_version": SCHEMA_VERSION, "mode": "preview",
+            "repository_root": str(root), "selected_count": len(items),
+            "allowed_count": sum(item["allowed"] for item in items),
+            "items": items, "writes_performed": False, "integrity_ok": True,
+        }
+    # Preserve the command's fail-fast lock contract before per-article calls.
+    with InitLock(root):
+        pass
+    results = []
+    total = len(items)
+    for index, item in enumerate(items, 1):
+        if progress:
+            progress("start", index, total, item, None)
+        final = None
+        mode = "run"
+        _, _, _, _, current_states = _context(root)
+        run_limit = (
+            int((current_states[item["post_id"]].get("retry_counts") or {}).get(
+                "run", 0)) + max_attempts)
+        for article_attempt in range(1, max_attempts + 1):
+            if article_attempt > 1 and progress:
+                progress("attempt", index, total, item, {
+                    "attempts": article_attempt, "mode": mode})
+            if mode == "completed":
+                final = _operation_result(
+                    item, "completed", "completed", 0, "",
+                    attempts=article_attempt - 1)
+            else:
+                operation = (
+                    _run_ready_once(
+                        root, execute=True, batch_id=item["batch_id"],
+                        post_id=item["post_id"], runner=runner,
+                        max_run_attempts=run_limit)
+                    if mode == "run" else
+                    resume(
+                        root, execute=True, batch_id=item["batch_id"],
+                        post_id=item["post_id"], runner=runner)
+                )
+                if operation["results"]:
+                    final = dict(operation["results"][0])
+                else:
+                    final = _operation_result(
+                        item, "blocked", "retry_not_allowed", -1,
+                        f"{mode} attempt was not eligible")
+                final["attempts"] = article_attempt
+            if final["result"] == "completed":
+                break
+            if progress:
+                progress("attempt_failed", index, total, item, final)
+            if article_attempt == max_attempts:
+                break
+            try:
+                mode = _prepare_article_retry(root, item["post_id"])
+            except ReadError:
+                mode = None
+            if mode is None:
+                if not final.get("error"):
+                    final["error"] = (
+                        "current execution state cannot be retried safely")
+                break
+            if mode != "completed":
+                if progress:
+                    progress("retry_wait", index, total, item, {
+                        "attempts": article_attempt + 1,
+                        "delay": retry_delay})
+                sleeper(retry_delay)
+        results.append(final)
+        if progress:
+            progress(
+                "finish" if final["result"] == "completed" else "final_failed",
+                index, total, item, final)
+            if final["result"] != "completed" and index < total:
+                progress("continue", index, total, item, final)
+    completed_count = sum(item["result"] == "completed" for item in results)
+    failed_count = sum(item["result"] != "completed" for item in results)
+    return {
+        "schema_version": SCHEMA_VERSION, "mode": "execute",
+        "repository_root": str(root), "selected_count": len(items),
+        "results": results, "completed_count": completed_count,
+        "failed_count": failed_count, "pending_count": 0,
+        "writes_performed": bool(items), "integrity_ok": True,
+    }
+
+
 def _resume_attempt_numbers(events, post_id, event_types, stage="resume"):
     attempts = set()
     for event in events:
@@ -2490,12 +2637,18 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
     valid_count = len(terminated)
     current_count = int((state.get("retry_counts") or {}).get(stage, 0))
     execution = _execution_details(root, article)
+    recover_failed_run = bool(
+        stage == "run" and state["workflow_status"] == "blocked"
+        and terminated and not orphaned and execution
+        and execution["status"] in {
+            "prepared", "excerpt_generated", "chinese_excerpt_saved",
+            "translation_started", "translation_failed"})
     reasons = []
     target_status = state["workflow_status"]
     recovery_action = None
     if state["workflow_status"] == "completed":
         reasons.append("completed article is not eligible")
-    if not orphaned:
+    if not orphaned and not recover_failed_run:
         reasons.append(f"no orphaned {stage} attempts")
     if stage == "run" and state["workflow_status"] != "completed":
         if state["workflow_status"] != "blocked":
@@ -2562,11 +2715,20 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
             stage=stage)
         reconciled = _reconciled_attempt_numbers(events, post_id, stage)
         orphaned = sorted(started - terminated - reconciled)
-        if not orphaned or state["workflow_status"] == "completed":
+        recover_failed_run = bool(
+            stage == "run" and state["workflow_status"] == "blocked"
+            and terminated and not orphaned and execution
+            and execution["status"] in {
+                "prepared", "excerpt_generated", "chinese_excerpt_saved",
+                "translation_started", "translation_failed"})
+        if (
+                (not orphaned and not recover_failed_run)
+                or state["workflow_status"] == "completed"):
             return result
         attempts = dict(state.get("retry_counts") or {})
         previous_count = int(attempts.get(stage, 0))
-        attempts[stage] = len(terminated)
+        attempts[stage] = (
+            len(terminated) if orphaned else previous_count)
         state["retry_counts"] = attempts
         timestamp = datetime.now(timezone.utc).isoformat()
         previous_status = state["workflow_status"]
@@ -2581,10 +2743,17 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
                 "recovered_at": timestamp,
             }
         state["updated_at"] = timestamp
+        event_type = (
+            f"{stage}_orphaned_attempts_reconciled"
+            if orphaned else "run_failed_attempt_reconciled")
         event = _transition_event(
-            f"{stage}_orphaned_attempts_reconciled", state,
+            event_type, state,
             previous_status, target_status,
-            f"orphaned {stage} attempts removed from retry count",
+            (
+                f"orphaned {stage} attempts removed from retry count"
+                if orphaned else
+                "failed run recovered without changing valid attempt count"
+            ),
             {
                 "stage": stage, "orphaned_attempts": orphaned,
                 "terminated_attempts": sorted(terminated),
@@ -2595,7 +2764,11 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
                 "chinese_excerpt_empty": chinese_excerpt_empty,
             },
             timestamp,
-            f"{stage}|orphan-recovery|" + ",".join(map(str, orphaned)),
+            (
+                f"{stage}|orphan-recovery|" + ",".join(map(str, orphaned))
+                if orphaned else
+                f"run|failed-recovery|{execution['sha256']}|{timestamp}"
+            ),
         )
         _persist_transition(
             root, _state_path(root, state["batch_id"], int(post_id)),
@@ -3017,15 +3190,33 @@ def render_run_progress(kind, index, total, item, result):
             f"{prefix} 开始处理：zh={item['post_id']} "
             f"en={item['english_post_id']}"
         )
-    if result["result"] == "completed":
+    if kind == "attempt":
+        return (
+            f"{prefix} 第 {result['attempts']}/3 次尝试："
+            f"zh={item['post_id']} mode={result['mode']}"
+        )
+    if kind == "attempt_failed":
+        return (
+            f"{prefix} 第 {result['attempts']}/3 次失败："
+            f"zh={item['post_id']} result={result['result']} "
+            f"error={_safe_subprocess_summary(result['error'])}"
+        )
+    if kind == "retry_wait":
+        return (
+            f"{prefix} {result['delay']} 秒后进行第 "
+            f"{result['attempts']}/3 次尝试"
+        )
+    if kind == "continue":
+        return f"{prefix} 继续处理下一篇"
+    if kind == "finish":
         return (
             f"{prefix} 处理完成：zh={item['post_id']} "
-            "result=completed"
+            f"attempts={result.get('attempts', 1)} result=completed"
         )
     return (
-        f"{prefix} 处理失败：zh={item['post_id']} "
-        f"result={result['result']} category={result['category']} "
-        f"returncode={result['returncode']} error={result['error']}"
+        f"{prefix} 最终失败：zh={item['post_id']} "
+        f"attempts={result['attempts']} result={result['result']} "
+        f"error={_safe_subprocess_summary(result['error'])}"
     )
 
 
