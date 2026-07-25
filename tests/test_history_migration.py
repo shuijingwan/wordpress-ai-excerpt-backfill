@@ -755,7 +755,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE.init_state(self.root, apply=True)
         with self.assertRaisesRegex(MODULE.ReadError, "language-review-confirmed"):
             MODULE.mark_converted(self.root, 401, 1, 1, False)
-        with self.assertRaisesRegex(MODULE.ReadError, "must equal"):
+        with self.assertRaisesRegex(MODULE.ReadError, "must not exceed"):
             MODULE.mark_converted(self.root, 401, 1, 2, True)
 
     def test_mark_converted_is_atomic_and_idempotent(self):
@@ -805,6 +805,16 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertFalse(second["changed"])
         self.assertEqual(before, (state_path.read_bytes(), event_path.read_bytes(),
                                   state_path.stat().st_mtime_ns))
+
+    def test_record_validation_accepts_cbp_below_original_limit(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 0, True)
+        path = self.write_record_validation(after_code_block_pro_count=0)
+        result = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.assertEqual("ready_for_execution", result["workflow_status"])
+        self.assertTrue(result["validation_passed"])
 
     def test_record_validation_failure_is_isolated(self):
         self.prepare_init_fixture()
@@ -950,6 +960,61 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 self.root, other,
                 source_factory=mock.Mock(side_effect=OSError("network")))
         self.assertEqual(before, state_path.read_bytes())
+
+    def test_validate_live_refresh_replaces_failed_evidence_after_success(self):
+        self.prepare_converted()
+        source = self.fake_source()
+        failed = self.validation_row(
+            validation_status="abnormal",
+            validation_reasons="syntaxhighlighter-remains",
+            after_syntaxhighlighter_count=1,
+            after_code_block_pro_count=0)
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[failed]):
+            MODULE.validate_live(
+                self.root, 401, source_factory=lambda rows: source)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        old_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        refreshed = self.validation_row(
+            after_content_sha256="c" * 64,
+            after_code_block_pro_count=0)
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[refreshed]):
+            result = MODULE.validate_live(
+                self.root, 401, source_factory=lambda rows: source,
+                refresh=True)
+        new_state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", result["workflow_status"])
+        self.assertNotEqual(
+            old_state["validation_evidence"]["sha256"],
+            new_state["validation_evidence"]["sha256"])
+        self.assertEqual(
+            "c" * 64, new_state["validation_evidence"]["after_content_sha256"])
+
+    def test_validate_live_refresh_timeout_preserves_failed_evidence(self):
+        self.prepare_converted()
+        source = self.fake_source()
+        failed = self.validation_row(
+            validation_status="abnormal",
+            validation_reasons="syntaxhighlighter-remains",
+            after_syntaxhighlighter_count=1,
+            after_code_block_pro_count=0)
+        with mock.patch(
+                "src.syntaxhighlighter_batch_validation.validate_batch",
+                return_value=[failed]):
+            MODULE.validate_live(
+                self.root, 401, source_factory=lambda rows: source)
+        before = self.snapshot()
+        with self.assertRaisesRegex(MODULE.ReadError, "operation failed"):
+            MODULE.validate_live(
+                self.root, 401,
+                source_factory=mock.Mock(side_effect=OSError("SSH timeout")),
+                refresh=True)
+        self.assertEqual(before, self.snapshot())
 
     def test_run_ready_preview_and_execute_completed(self):
         self.prepare_converted()
@@ -1643,6 +1708,23 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                     "--repo-root", str(self.root)])
         self.assertEqual(MODULE.EXIT_OK, code)
         self.assertEqual(expected, json.loads(output.getvalue()))
+
+    def test_validate_live_cli_passes_refresh_flag(self):
+        output = io.StringIO()
+        with mock.patch.object(
+                MODULE, "validate_live",
+                return_value={
+                    "schema_version": 1, "mode": "live-readonly",
+                    "workflow_status": "ready_for_execution",
+                    "integrity_ok": True,
+                }
+        ) as validate:
+            with redirect_stdout(output):
+                code = MODULE.main([
+                    "validate-live", "--post-id", "401", "--refresh", "--json",
+                    "--repo-root", str(self.root)])
+        self.assertEqual(MODULE.EXIT_OK, code)
+        validate.assert_called_once_with(self.root, 401, refresh=True)
 
     def test_script_entrypoint_can_import_repository_modules(self):
         completed = subprocess.run(

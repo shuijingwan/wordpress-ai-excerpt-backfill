@@ -100,12 +100,47 @@ class SyntaxHighlighterBatchValidationTest(unittest.TestCase):
         self.assertEqual([1, 2], [r["after_code_block_pro_count"] for r in results])
         self.assertTrue(all(r["validation_status"] == "ready" for r in results))
 
+    def test_fewer_code_block_pro_blocks_than_original_syntaxhighlighter_passes(self):
+        rows = [
+            batch_row(1, 12, 12),
+            batch_row(2, 12, 12),
+            batch_row(3, 23, 23),
+        ]
+        source = Wp(rows)
+        source.posts[1]["content"]["raw"] = cbp() * 12
+        source.posts[2]["content"]["raw"] = cbp() * 8
+        source.posts[3]["content"]["raw"] = cbp() * 21
+        results = self.validate(rows, source)
+        self.assertEqual([12, 8, 21], [
+            row["after_code_block_pro_count"] for row in results])
+        self.assertTrue(all(
+            row["validation_status"] == "ready" for row in results))
+
+    def test_remaining_syntaxhighlighter_fails_even_when_cbp_is_below_limit(self):
+        rows = [batch_row(1, 12, 12)]
+        source = Wp(rows)
+        source.posts[1]["content"]["raw"] = cbp() * 8 + sh()
+        result = self.validate(rows, source)[0]
+        self.assertEqual("pending", result["validation_status"])
+        self.assertIn("syntaxhighlighter-remains", result["validation_reasons"])
+        self.assertNotIn(
+            "code-block-pro-count-mismatch", result["validation_reasons"])
+
+    def test_code_block_pro_count_above_original_limit_fails(self):
+        rows = [batch_row(1, 12, 12)]
+        source = Wp(rows)
+        source.posts[1]["content"]["raw"] = cbp() * 13
+        result = self.validate(rows, source)[0]
+        self.assertEqual("abnormal", result["validation_status"])
+        self.assertIn(
+            "code-block-pro-count-mismatch", result["validation_reasons"])
+
     def test_residual_syntaxhighlighter_and_unchanged_hash_are_pending(self):
         rows = [batch_row(1), batch_row(2)]
         source = Wp(rows); source.posts[1]["content"]["raw"] = cbp() + sh()
         source.posts[2]["content"]["raw"] = sh()
         results = self.validate(rows, source)
-        self.assertEqual(["pending", "abnormal"], [r["validation_status"] for r in results])
+        self.assertEqual(["pending", "pending"], [r["validation_status"] for r in results])
         self.assertIn("syntaxhighlighter-remains", results[0]["validation_reasons"])
         self.assertIn("content-hash-unchanged", results[1]["validation_reasons"])
 

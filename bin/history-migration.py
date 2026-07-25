@@ -1284,8 +1284,10 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
                    language_review_confirmed):
     if not language_review_confirmed:
         raise ReadError("--language-review-confirmed is required")
-    if syntax_count_before < 1 or cbp_count_after < 1:
-        raise ReadError("code block counts must be positive")
+    if syntax_count_before < 1 or cbp_count_after < 0:
+        raise ReadError(
+            "SyntaxHighlighter count must be positive and Code Block Pro "
+            "count must be non-negative")
     with InitLock(Path(root).resolve()):
         root, batches, fixed, _, states = _context(root)
         article = fixed.get(int(post_id))
@@ -1302,8 +1304,8 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
             raise ReadError(
                 f"syntax-count-before mismatch: expected {expected}, got "
                 f"{syntax_count_before}")
-        if cbp_count_after != syntax_count_before:
-            raise ReadError("cbp-count-after must equal syntax-count-before")
+        if cbp_count_after > syntax_count_before:
+            raise ReadError("cbp-count-after must not exceed syntax-count-before")
         if state["workflow_status"] == "awaiting_readonly_validation":
             same = (
                 state.get("manual_conversion", {}).get("status") == "confirmed"
@@ -1421,7 +1423,12 @@ def _validation_result(path, batch, article, state):
     after_sha256 = _validation_text(row, "after_content_sha256", path)
     if not _valid_sha256(after_sha256):
         raise ReadError(f"{path}: invalid after_content_sha256")
-    expected_cbp = state["manual_conversion"]["cbp_count_after"]
+    source_row = article["source_row"]
+    expected_cbp = int(source_row.get(
+        "expected_code_block_pro_count_after",
+        int(source_row["before_code_block_pro_count"])
+        + int(source_row["before_syntaxhighlighter_count"]),
+    ))
     if _validation_int(
             row, "expected_code_block_pro_count_after", path) != expected_cbp:
         raise ReadError(f"{path}: validation expected Code Block Pro count mismatch")
@@ -1432,7 +1439,7 @@ def _validation_result(path, batch, article, state):
             _validation_int(row, "after_syntaxhighlighter_count", path) == 0,
         "code_block_pro_count":
             _validation_int(row, "after_code_block_pro_count", path)
-            == expected_cbp,
+            <= expected_cbp,
         "unknown_code_formats_zero":
             "unexpected-code-format:" not in validation_reasons,
         "polylang_relation_normal":
@@ -1453,7 +1460,7 @@ def _validation_result(path, batch, article, state):
             == int(article["source_row"]["before_code_block_pro_count"]),
         "manual_cbp_count":
             _validation_int(row, "after_code_block_pro_count", path)
-            == state["manual_conversion"]["cbp_count_after"],
+            <= expected_cbp,
     }
     status = _validation_text(row, "validation_status", path)
     if status not in {"ready", "pending", "abnormal"}:
@@ -1466,7 +1473,7 @@ def _validation_result(path, batch, article, state):
     return row, passed, sorted(set(failure_reasons)), checks
 
 
-def _record_validation_locked(root, post_id, validation_file):
+def _record_validation_locked(root, post_id, validation_file, refresh=False):
     root, batches, fixed, _, states = _context(root)
     article = fixed.get(int(post_id))
     if article is None:
@@ -1484,7 +1491,10 @@ def _record_validation_locked(root, post_id, validation_file):
                 "workflow_status": state["workflow_status"],
                 "chinese_post_id": int(post_id), "integrity_ok": True,
             }
-    if state["workflow_status"] != "awaiting_readonly_validation":
+    allowed_statuses = {"awaiting_readonly_validation"}
+    if refresh:
+        allowed_statuses.add("validation_failed")
+    if state["workflow_status"] not in allowed_statuses:
         raise ReadError(
             f"cannot record validation from {state['workflow_status']}")
     batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
@@ -1577,12 +1587,12 @@ def _execution_manifest_row(article, validation_row, source):
         "chinese_language": validation_row["chinese_language"],
         "source_migration_type": "syntaxhighlighter-to-code-block-pro",
         "expected_code_block_pro_count":
-            validation_row["expected_code_block_pro_count_after"],
+            validation_row["after_code_block_pro_count"],
         "expected_syntaxhighlighter_count": 0,
     }
 
 
-def validate_live(root, post_id, source_factory=None):
+def validate_live(root, post_id, source_factory=None, refresh=False):
     """Reuse the batch read-only source and validator for exactly one fixed row."""
     root = Path(root).resolve()
     with InitLock(root):
@@ -1600,7 +1610,7 @@ def validate_live(root, post_id, source_factory=None):
         csv_path, snapshot_path, manifest_path = _validation_paths(
             root, batch["batch_id"], post_id)
         relative_csv = _relative(csv_path, root)
-        if state["workflow_status"] in {
+        if not refresh and state["workflow_status"] in {
                 "ready_for_execution", "validation_failed"}:
             existing = state.get("validation_evidence")
             if existing and existing.get("source_file") == relative_csv:
@@ -1611,10 +1621,13 @@ def validate_live(root, post_id, source_factory=None):
                     "wordpress_writes": 0, "glm_calls": 0,
                     "translation_calls": 0,
                 }
-        if state["workflow_status"] != "awaiting_readonly_validation":
+        allowed_statuses = {"awaiting_readonly_validation"}
+        if refresh:
+            allowed_statuses.add("validation_failed")
+        if state["workflow_status"] not in allowed_statuses:
             raise ReadError(
                 f"cannot validate live from {state['workflow_status']}")
-        if csv_path.exists():
+        if csv_path.exists() and not refresh:
             result = _record_validation_locked(root, post_id, relative_csv)
             return {
                 **result, "mode": "import-existing",
@@ -1622,7 +1635,7 @@ def validate_live(root, post_id, source_factory=None):
                 "wordpress_writes": 0, "glm_calls": 0,
                 "translation_calls": 0,
             }
-        if snapshot_path.exists() or manifest_path.exists():
+        if not refresh and (snapshot_path.exists() or manifest_path.exists()):
             raise ReadError(
                 f"partial validation evidence already exists for Chinese post {post_id}")
         try:
@@ -1642,17 +1655,33 @@ def validate_live(root, post_id, source_factory=None):
                 [article["source_row"]], source, source, config)
             if len(rows) != 1:
                 raise ReadError("read-only validator returned an unexpected row count")
-            write_outputs(rows, csv_path, snapshot_path)
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            output_directory = Path(tempfile.mkdtemp(
+                prefix=f".validation-{int(post_id)}-", dir=csv_path.parent))
+            temporary_csv = output_directory / csv_path.name
+            temporary_snapshot = output_directory / snapshot_path.name
+            temporary_manifest = output_directory / manifest_path.name
+            write_outputs(rows, temporary_csv, temporary_snapshot)
             # The shared writer intentionally owns validation semantics; rewrite
             # only its CSV line endings atomically for stable Git text evidence.
-            _atomic_write_csv(csv_path, LIVE_VALIDATION_FIELDS, rows)
+            _atomic_write_csv(temporary_csv, LIVE_VALIDATION_FIELDS, rows)
             if rows[0]["validation_status"] == "ready":
                 _atomic_write_csv(
-                    manifest_path, EXECUTION_MANIFEST_FIELDS,
+                    temporary_manifest, EXECUTION_MANIFEST_FIELDS,
                     [_execution_manifest_row(article, rows[0], source)])
+            # Prove the new CSV can form state evidence before replacing any
+            # previously recorded validation files.
+            _validation_result(
+                temporary_csv, batch, article, state)
+            os.replace(temporary_csv, csv_path)
+            os.replace(temporary_snapshot, snapshot_path)
+            if temporary_manifest.exists():
+                os.replace(temporary_manifest, manifest_path)
+            output_directory.rmdir()
         except (SafetyError, OSError, UnicodeError, json.JSONDecodeError) as error:
             raise ReadError(f"validate-live operation failed: {error}") from error
-        result = _record_validation_locked(root, post_id, relative_csv)
+        result = _record_validation_locked(
+            root, post_id, relative_csv, refresh=refresh)
         return {
             **result, "mode": "live-readonly",
             "validation_file": relative_csv,
@@ -3267,6 +3296,9 @@ def parse_args(argv=None):
     live = subparsers.add_parser(
         "validate-live", help="run production read-only validation for one article")
     live.add_argument("--post-id", required=True, type=int)
+    live.add_argument(
+        "--refresh", action="store_true",
+        help="fetch production data again for awaiting or failed validation")
     live.add_argument("--json", action="store_true", dest="json_output")
     live.add_argument("--repo-root", type=Path, default=repository_root(),
                       help=argparse.SUPPRESS)
@@ -3350,7 +3382,8 @@ def main(argv=None):
             result = plan_run(args.repo_root)
             output = render_plan_text(result)
         elif args.command == "validate-live":
-            result = validate_live(args.repo_root, args.post_id)
+            result = validate_live(
+                args.repo_root, args.post_id, refresh=args.refresh)
             output = render_operation_text(result)
         elif args.command == "run-ready":
             progress = None

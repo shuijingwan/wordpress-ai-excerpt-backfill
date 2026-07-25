@@ -206,9 +206,13 @@ JSONL 追加本身不是跨进程安全事务，因此写事件和状态时必�
    - 生产正文哈希若仍等于基线，拒绝标记，说明转换尚未发生；
    - 若在用户未标记转换期间发生非预期变化，进入 `blocked`，不能猜测变化来源；
    - 保存转换后哈希，后续验收证据必须与该哈希一致。若人工修复导致再次变化，产生新事件，不覆盖旧证据。
-6. 转换后必须满足 `after_syntaxhighlighter_count=0` 和
-   `after_code_block_pro_count=before_code_block_pro_count+before_syntaxhighlighter_count`。
-   数量不符、Gutenberg 不平衡、CBP 不可解析、代码为空或出现未知格式均验收失败。
+6. 转换后必须满足 `after_syntaxhighlighter_count=0`，并且
+   `after_code_block_pro_count<=expected_code_block_pro_count_after`。
+   `expected_code_block_pro_count_after` 是迁移前生成的数量上限，不再表示必须严格相等。
+   部分原 SyntaxHighlighter 区块可由人工判断迁移为 MerPress 等更合适的 Gutenberg
+   区块，因此迁移后的 Code Block Pro 少于原 SyntaxHighlighter 数量是合法情况；
+   超过上限仍验收失败。Gutenberg 不平衡、CBP 不可解析、代码为空或出现未知格式等
+   其他安全验证保持不变。
 7. 人工语言核对是硬门槛，不能从“language 字段存在”推断语义正确。未确认不得进入只读验收通过后的执行阶段。
 8. Polylang 中英文状态或双向关系异常，停止当前文章并置 `blocked`；不得影响后续文章。
 9. 只读验收不是永久通行证。调用 `execute-single-candidate.py` 前仍使用其 live validation/preflight
@@ -268,7 +272,7 @@ python3 bin/history-migration.py <command> [options]
 | `show-current` | 显示唯一活动批次和下一批人工任务 | 否 |
 | `mark-converted --batch ID --post-id ID` | 标记人工转换完成并记录只读观察值 | 否 |
 | `confirm-languages --batch ID --post-id ID` | 记录人工语言核对完成 | 否 |
-| `validate --batch ID [--post-id ID]` | 复用现有生产只读验收模块，保存证据 | 否 |
+| `validate-live --post-id ID [--refresh]` | 复用现有生产只读验收模块，保存或显式刷新证据 | 否 |
 | `run --batch ID --post-id ID` | 通过保护后调用现有单篇执行器 | 是，必须明确 post ID |
 | `resume --batch ID [--post-id ID]` | 仅处理允许恢复的 pending/failed；逐篇隔离 | 可能 |
 
@@ -285,7 +289,10 @@ python3 bin/history-migration.py <command> [options]
 4. 用户在 WordPress 后台人工把每个 SyntaxHighlighter 区块转换为 Code Block Pro。
 5. `mark-converted`：只记录转换事实和只读观察，不写 WordPress。
 6. 人工逐块核对语言；明确语言沿用对应语言，无声明使用 Plaintext；运行 `confirm-languages`。
-7. `validate --post-id`：执行生产只读验收。失败则人工修复并重新确认，不生成摘要。
+7. `validate-live --post-id ID`：执行生产只读验收。失败后人工修复文章，再用
+   `validate-live --post-id ID --refresh` 显式重新抓取生产数据并验收，不生成摘要。
+   刷新会先取得并验证新的只读快照，再更新当前证据；SSH 超时或网络错误时保留旧
+   evidence 和 `validation_failed` 状态，可安全重试。
 8. `run --post-id`：只对 `ready_for_excerpt` 调用现有单篇执行器。
 9. 单篇失败记录后继续下一篇；可用 `resume --post-id` 恢复允许的阶段。
 10. `summary`：结束时输出 completed、failed、pending、blocked。
