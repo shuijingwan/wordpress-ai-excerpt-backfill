@@ -1204,6 +1204,103 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertNotIn("--resume", execution_commands[0])
         self.assertIn("--resume", execution_commands[1])
 
+    def test_excerpt_generated_with_saved_live_excerpt_retries_as_resume(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        execution_commands = []
+
+        class Source:
+            def get_post(self, post_id):
+                return {
+                    "id": post_id,
+                    "excerpt": {"raw": "已经保存的摘要"},
+                }
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_commands.append(command)
+            if len(execution_commands) == 1:
+                self.write_execution(401, 1401, "excerpt_generated")
+                return mock.Mock(
+                    returncode=1, stdout="", stderr="RemoteDisconnected")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            source_factory=lambda rows: Source(),
+            sleeper=lambda seconds: None)
+        self.assertEqual("completed", result["results"][0]["result"])
+        self.assertNotIn("--resume", execution_commands[0])
+        self.assertIn("--resume", execution_commands[1])
+
+    def test_excerpt_generated_with_empty_live_excerpt_restarts_run(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        execution_commands = []
+
+        class Source:
+            def get_post(self, post_id):
+                return {"id": post_id, "excerpt": {"raw": ""}}
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_commands.append(command)
+            if len(execution_commands) == 1:
+                self.write_execution(401, 1401, "excerpt_generated")
+                return mock.Mock(returncode=1, stdout="", stderr="timeout")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            source_factory=lambda rows: Source(),
+            sleeper=lambda seconds: None)
+        self.assertEqual("completed", result["results"][0]["result"])
+        self.assertEqual(2, len(execution_commands))
+        self.assertTrue(all(
+            "--resume" not in command for command in execution_commands))
+
+    def test_excerpt_observation_timeout_stays_safely_retryable(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        execution_commands = []
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_commands.append(command)
+            self.write_execution(401, 1401, "excerpt_generated")
+            return mock.Mock(returncode=1, stdout="", stderr="timeout")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            source_factory=mock.Mock(
+                side_effect=MODULE.SafetyError(
+                    "batch read-only SSH query timed out")),
+            sleeper=lambda seconds: None)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("observation_failed", result["results"][0]["result"])
+        self.assertEqual(
+            "transient_network_error", result["results"][0]["category"])
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual("observe", state["recovery"]["action"])
+        self.assertEqual(1, len(execution_commands))
+        self.assertTrue(MODULE.run_ready(self.root)["items"][0]["allowed"])
+
     def test_run_ready_stops_at_three_and_continues(self):
         self.prepare_converted()
         for post_id in (401, 402):

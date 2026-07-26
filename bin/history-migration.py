@@ -1916,7 +1916,8 @@ def _classify_subprocess_failure(completed, phase):
         "unexpected_eof_while_reading", "unexpected eof",
         "timed out", "timeout", "temporary failure in name resolution",
         "name or service not known", "connection reset", "connection refused",
-        "remote end closed connection",
+        "remote end closed connection", "remotedisconnected",
+        "http error 502", "http error 503", "bad gateway",
     )
     authentication_markers = (
         "http error 401", "http error 403", "unauthorized", "forbidden",
@@ -2128,7 +2129,7 @@ def _run_items(root, batch_id=None):
                 and execution["status"] in {"prepared", "excerpt_generated"}
                 and recovery.get("status") == "applied"
                 and recovery.get("stage") == "run"
-                and recovery.get("action") == "restart"
+                and recovery.get("action") in {"restart", "observe"}
                 and recovery.get("execution_sha256") == execution_sha256
             )
             if execution and not recovered_restart:
@@ -2466,7 +2467,56 @@ def resume(root, execute=False, batch_id=None, post_id=None,
     }
 
 
-def _prepare_article_retry(root, post_id):
+def _live_chinese_excerpt_empty(article, source_factory=None):
+    from src.batch_readonly_ssh import BatchReadonlySshSource
+    from src.single_candidate_flow import raw_field
+
+    source = (
+        source_factory([article["source_row"]])
+        if source_factory else
+        BatchReadonlySshSource.fetch([article["source_row"]])
+    )
+    chinese = source.get_post(article["chinese_post_id"])
+    if not isinstance(chinese, dict) or chinese.get("id") != article["chinese_post_id"]:
+        raise SafetyError("read-only excerpt observation returned an unexpected post")
+    excerpt = chinese.get("excerpt")
+    if not isinstance(excerpt, dict) or not isinstance(excerpt.get("raw"), str):
+        raise SafetyError("read-only excerpt observation returned an invalid excerpt")
+    return not raw_field(chinese, "excerpt").strip()
+
+
+def _preserve_excerpt_observation_retry(root, post_id):
+    """Keep excerpt_generated eligible without guessing run versus resume."""
+    root, _, fixed, _, states = _context(root)
+    article = fixed[int(post_id)]
+    state = states[int(post_id)]
+    execution = _execution_details(root, article)
+    if execution is None or execution["status"] != "excerpt_generated":
+        return
+    timestamp = datetime.now(timezone.utc).isoformat()
+    previous = state["workflow_status"]
+    state["workflow_status"] = "ready_for_execution"
+    state["recovery"] = {
+        "status": "applied", "stage": "run", "action": "observe",
+        "execution_status": execution["status"],
+        "execution_sha256": execution["sha256"],
+        "recovered_at": timestamp,
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "excerpt_observation_retry_preserved", state, previous,
+        "ready_for_execution",
+        "live Chinese excerpt state could not be confirmed; retry preserved",
+        {
+            "execution_status": execution["status"],
+            "execution_sha256": execution["sha256"],
+        },
+        timestamp, f"excerpt-observation|{execution['sha256']}|{timestamp}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+
+
+def _prepare_article_retry(root, post_id, source_factory=None):
     """Use existing execution evidence to choose and audit the next attempt."""
     root, _, fixed, _, states = _context(root)
     article = fixed[int(post_id)]
@@ -2485,10 +2535,19 @@ def _prepare_article_retry(root, post_id):
             and not _execution_artifacts(root, post_id)
             else None
         )
-    if execution["status"] in {"prepared", "excerpt_generated"}:
+    if execution["status"] == "prepared":
         mode = "run"
         target = "ready_for_execution"
         action = "restart"
+    elif execution["status"] == "excerpt_generated":
+        if _live_chinese_excerpt_empty(article, source_factory):
+            mode = "run"
+            target = "ready_for_execution"
+            action = "restart"
+        else:
+            mode = "resume"
+            target = "ready_for_translation_resume"
+            action = "resume"
     elif execution["status"] in {
             "chinese_excerpt_saved", "translation_started",
             "translation_failed"}:
@@ -2524,7 +2583,7 @@ def _prepare_article_retry(root, post_id):
 def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
               progress=None, sleeper=time.sleep,
               max_attempts=MAX_ARTICLE_ATTEMPTS,
-              retry_delay=ARTICLE_RETRY_DELAY):
+              retry_delay=ARTICLE_RETRY_DELAY, source_factory=None):
     root, items = _run_items(root, batch_id)
     if not execute:
         return {
@@ -2542,12 +2601,59 @@ def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
         if progress:
             progress("start", index, total, item, None)
         final = None
-        mode = "run"
-        _, _, _, _, current_states = _context(root)
+        _, _, _, current_executions, current_states = _context(root)
+        mode = (
+            None if item["post_id"] in current_executions else "run")
         run_limit = (
             int((current_states[item["post_id"]].get("retry_counts") or {}).get(
                 "run", 0)) + max_attempts)
         for article_attempt in range(1, max_attempts + 1):
+            if mode is None:
+                try:
+                    mode = _prepare_article_retry(
+                        root, item["post_id"], source_factory=source_factory)
+                except ReadError as error:
+                    if final is None:
+                        failure = _exception_failure(error, "preflight")
+                        final = _operation_result(
+                            item, "retry_not_allowed", failure["category"],
+                            failure["returncode"], _failure_error(failure),
+                            attempts=article_attempt,
+                            **_failure_details(failure))
+                    break
+                except (OSError, subprocess.SubprocessError,
+                        SafetyError) as error:
+                    if article_attempt > 1 and progress:
+                        progress("attempt", index, total, item, {
+                            "attempts": article_attempt,
+                            "mode": "excerpt-observation"})
+                    _preserve_excerpt_observation_retry(
+                        root, item["post_id"])
+                    failure = _exception_failure(error, "preflight")
+                    final = _operation_result(
+                        item, "observation_failed", failure["category"],
+                        failure["returncode"],
+                        "cannot confirm live Chinese excerpt state: "
+                        + _failure_error(failure),
+                        phase="excerpt_observation",
+                        attempts=article_attempt,
+                        **_failure_details(failure))
+                    if progress:
+                        progress("attempt_failed", index, total, item, final)
+                    if article_attempt < max_attempts:
+                        if progress:
+                            progress("retry_wait", index, total, item, {
+                                "attempts": article_attempt + 1,
+                                "delay": retry_delay})
+                        sleeper(retry_delay)
+                    continue
+            if mode is None:
+                if final is None:
+                    final = _operation_result(
+                        item, "retry_not_allowed", "retry_not_allowed", -1,
+                        "current execution state cannot be retried safely",
+                        attempts=article_attempt)
+                break
             if article_attempt > 1 and progress:
                 progress("attempt", index, total, item, {
                     "attempts": article_attempt, "mode": mode})
@@ -2579,21 +2685,12 @@ def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
                 progress("attempt_failed", index, total, item, final)
             if article_attempt == max_attempts:
                 break
-            try:
-                mode = _prepare_article_retry(root, item["post_id"])
-            except ReadError:
-                mode = None
-            if mode is None:
-                if not final.get("error"):
-                    final["error"] = (
-                        "current execution state cannot be retried safely")
-                break
-            if mode != "completed":
-                if progress:
-                    progress("retry_wait", index, total, item, {
-                        "attempts": article_attempt + 1,
-                        "delay": retry_delay})
-                sleeper(retry_delay)
+            mode = None
+            if progress:
+                progress("retry_wait", index, total, item, {
+                    "attempts": article_attempt + 1,
+                    "delay": retry_delay})
+            sleeper(retry_delay)
         results.append(final)
         if progress:
             progress(
