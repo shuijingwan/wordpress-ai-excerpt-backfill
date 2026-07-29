@@ -68,7 +68,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             for chinese, english in pairs
         ])
 
-    def write_batch(self, name, pairs, sequence=1, fields=None):
+    def write_batch(self, name, pairs, sequence=1, fields=None,
+                    batch_expected_count=None):
         path = self.root / "data/analysis" / name
         values = []
         batch_id = "syntaxhighlighter-" + name[
@@ -79,6 +80,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 "schema_version": 1,
                 "batch_id": batch_id,
                 "batch_sequence": sequence,
+                "batch_expected_count": batch_expected_count,
                 "allocated_at": f"2026-07-{20 + sequence:02d}T00:00:00+00:00",
                 "chinese_post_id": chinese,
                 "english_post_id": english,
@@ -90,7 +92,10 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 "migration_status": "pending",
                 "validation_status": "not-checked",
             })
-        self.write_csv(path, fields or SYNTAX_FIELDS, values)
+        output_fields = fields or SYNTAX_FIELDS
+        if batch_expected_count is not None and fields is None:
+            output_fields = SYNTAX_FIELDS + ["batch_expected_count"]
+        self.write_csv(path, output_fields, values)
         return path, batch_id
 
     def write_execution(self, chinese, english, status="completed", raw=None):
@@ -450,6 +455,42 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         result = self.status()
         self.assertTrue(any("expected 5 fixed articles, found 6" in error
                             for error in result["errors"]))
+
+    def test_metadata_fixed_twelve_article_batch_count_is_strict(self):
+        pairs = [(value, value + 1000) for value in range(701, 713)]
+        path, batch_id = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260729-01.csv",
+            pairs, sequence=4, batch_expected_count=12)
+        result = self.status()
+        self.assertTrue(result["integrity_ok"])
+        batch = next(item for item in MODULE.discover_batches(self.root, [])
+                     if item["batch_id"] == batch_id)
+        self.assertEqual(12, batch["expected_count"])
+
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            fields = reader.fieldnames
+        self.write_csv(path, fields, rows[:-1])
+        result = self.status()
+        self.assertTrue(any("expected 12 fixed articles, found 11" in error
+                            for error in result["errors"]))
+
+        rows.append({
+            **rows[-1], "chinese_post_id": 713, "english_post_id": 1713,
+        })
+        self.write_csv(path, fields, rows)
+        result = self.status()
+        self.assertTrue(any("expected 12 fixed articles, found 13" in error
+                            for error in result["errors"]))
+
+    def test_current_twelve_article_legacy_batch_mapping_remains_compatible(self):
+        pairs = [(value, value + 1000) for value in range(801, 813)]
+        self.write_batch(
+            "syntaxhighlighter-migration-batch-20260728-01.csv",
+            pairs, sequence=4)
+        result = self.status()
+        self.assertTrue(result["integrity_ok"])
 
     def test_existing_expected_counts_and_default_twenty_are_unchanged(self):
         self.assertEqual(42, self.original_legacy_count)

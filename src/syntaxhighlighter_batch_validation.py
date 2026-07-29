@@ -34,6 +34,7 @@ REQUIRED_BATCH_FIELDS = {
 TEXTAREA_RE = re.compile(
     r"<textarea\b[^>]*>(?P<code>.*?)</textarea\s*>", re.IGNORECASE | re.DOTALL
 )
+BATCH_EXPECTED_COUNT_FIELD = "batch_expected_count"
 
 
 def load_batch(path, expected_count):
@@ -41,12 +42,35 @@ def load_batch(path, expected_count):
         raise SafetyError("expected_count must be a positive integer")
     with Path(path).open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        missing = REQUIRED_BATCH_FIELDS - set(reader.fieldnames or ())
+        fields = set(reader.fieldnames or ())
+        missing = REQUIRED_BATCH_FIELDS - fields
         if missing:
             raise SafetyError("batch missing fields: " + ",".join(sorted(missing)))
         rows = list(reader)
-    if len(rows) != expected_count:
-        raise SafetyError(f"batch count must be exactly {expected_count}, got {len(rows)}")
+    fixed_count = expected_count
+    if BATCH_EXPECTED_COUNT_FIELD in fields:
+        values = {
+            row.get(BATCH_EXPECTED_COUNT_FIELD, "").strip() for row in rows
+        }
+        if len(values) != 1:
+            raise SafetyError(
+                f"batch {BATCH_EXPECTED_COUNT_FIELD} must be consistent")
+        value = next(iter(values), "")
+        try:
+            fixed_count = int(value)
+        except ValueError as error:
+            raise SafetyError(
+                f"batch {BATCH_EXPECTED_COUNT_FIELD} must be a positive integer"
+            ) from error
+        if fixed_count < 1 or str(fixed_count) != value:
+            raise SafetyError(
+                f"batch {BATCH_EXPECTED_COUNT_FIELD} must be a positive integer")
+        if fixed_count > expected_count:
+            raise SafetyError(
+                f"batch fixed count {fixed_count} exceeds requested maximum "
+                f"{expected_count}")
+    if len(rows) != fixed_count:
+        raise SafetyError(f"batch count must be exactly {fixed_count}, got {len(rows)}")
     chinese = [_positive_id(row, "chinese_post_id") for row in rows]
     english = [_positive_id(row, "english_post_id") for row in rows]
     if len(set(chinese)) != len(chinese):

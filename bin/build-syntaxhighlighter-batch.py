@@ -11,12 +11,16 @@ import tempfile
 
 
 FIELDS = (
-    "schema_version", "batch_id", "batch_sequence", "allocated_at",
+    "schema_version", "batch_id", "batch_sequence", "batch_expected_count",
+    "allocated_at",
     "chinese_post_id", "english_post_id", "chinese_title", "published_at",
     "edit_url", "permalink", "before_content_sha256",
     "before_syntaxhighlighter_count", "before_code_block_pro_count",
     "expected_syntaxhighlighter_count_after", "expected_code_block_pro_count_after",
     "migration_status", "validation_status", "validation_reasons",
+)
+LEGACY_FIXED_FIELDS = tuple(
+    field for field in FIELDS if field != "batch_expected_count"
 )
 REQUIRED_PREVIEW_FIELDS = {
     "chinese_post_id", "english_post_id", "chinese_title", "published_at", "permalink",
@@ -90,7 +94,7 @@ def _existing_batches(output):
             continue
         if not FIXED_BATCH_NAME.fullmatch(path.name):
             continue
-        _read_csv(path, FIELDS, require_rows=True)
+        _read_csv(path, LEGACY_FIXED_FIELDS, require_rows=True)
         paths.append(path)
     return sorted(paths)
 
@@ -141,20 +145,34 @@ def build_batch(preview_path, output_path, expected_count, batch_id, pilot_manif
     excluded = pilot_ids | old_ids | batch_ids
     available = [row for row in eligible_rows if int(row["chinese_post_id"]) not in excluded]
     available.sort(key=lambda row: (row["published_at"], int(row["chinese_post_id"])))
-    if len(available) < expected_count:
-        raise BatchError(
-            f"not enough eligible unallocated candidates: expected {expected_count}, found {len(available)}"
-        )
+    selected_count = min(expected_count, len(available))
+    final_partial_batch = 0 < selected_count < expected_count
+    stats = {
+        "preview_ready": len(ready_rows),
+        "strictly_eligible": len(eligible_rows),
+        "excluded_pilot_ids": sorted(excluded_pilot),
+        "excluded_old_count": len(excluded_old),
+        "excluded_existing_batch_count": len(excluded_batches),
+        "requested_count": expected_count,
+        "available_before_allocation": len(available),
+        "selected_count": selected_count,
+        "final_partial_batch": final_partial_batch,
+        "remaining_unallocated_ready": len(available) - selected_count,
+        "batch_sequence": sequence,
+    }
+    if selected_count == 0:
+        return [], stats
 
     timestamp = allocated_at or datetime.now(timezone.utc).isoformat()
     selected = []
-    for row in available[:expected_count]:
+    for row in available[:selected_count]:
         before_sh = int(row["syntaxhighlighter_count"])
         before_cbp = int(row["code_block_pro_count"])
         selected.append({
             "schema_version": 1,
             "batch_id": batch_id,
             "batch_sequence": sequence,
+            "batch_expected_count": selected_count,
             "allocated_at": timestamp,
             "chinese_post_id": int(row["chinese_post_id"]),
             "english_post_id": int(row["english_post_id"]),
@@ -185,16 +203,7 @@ def build_batch(preview_path, output_path, expected_count, batch_id, pilot_manif
     finally:
         Path(temporary).unlink(missing_ok=True)
 
-    return selected, {
-        "preview_ready": len(ready_rows),
-        "strictly_eligible": len(eligible_rows),
-        "excluded_pilot_ids": sorted(excluded_pilot),
-        "excluded_old_count": len(excluded_old),
-        "excluded_existing_batch_count": len(excluded_batches),
-        "available_before_allocation": len(available),
-        "remaining_unallocated_ready": len(available) - len(selected),
-        "batch_sequence": sequence,
-    }
+    return selected, stats
 
 
 def main(argv=None):
@@ -213,8 +222,11 @@ def main(argv=None):
         )
     except BatchError as error:
         parser.error(str(error))
-    print(f"Batch written: {args.output}")
-    print(f"Candidates: {len(rows)}")
+    if rows:
+        print(f"Batch written: {args.output}")
+        print(f"Candidates: {len(rows)}")
+    else:
+        print("No batch written: no eligible unallocated candidates remain.")
     for key, value in stats.items():
         print(f"{key}: {value}")
 

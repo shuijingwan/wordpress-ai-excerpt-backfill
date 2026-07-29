@@ -75,6 +75,7 @@ SYNTAX_BATCH_EXPECTED_COUNTS = {
     "syntaxhighlighter-20260722-01": 20,
     "syntaxhighlighter-20260723-01": 20,
     "syntaxhighlighter-priority-20260724-01": 5,
+    "syntaxhighlighter-20260728-01": 12,
 }
 SYNTAX_FIXED_FIELDS = {
     "schema_version", "batch_id", "batch_sequence", "allocated_at",
@@ -82,6 +83,7 @@ SYNTAX_FIXED_FIELDS = {
     "before_content_sha256", "before_syntaxhighlighter_count",
     "before_code_block_pro_count", "migration_status", "validation_status",
 }
+SYNTAX_BATCH_EXPECTED_COUNT_FIELD = "batch_expected_count"
 MANIFEST_FIELDS = {
     "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
 }
@@ -206,12 +208,36 @@ def _load_syntax_batch(path, root):
     articles = [_article(row, position, path, root)
                 for position, row in enumerate(rows, 1)]
     batch_id = next(iter(batch_ids))
+    if SYNTAX_BATCH_EXPECTED_COUNT_FIELD in fields:
+        expected_values = {
+            row.get(SYNTAX_BATCH_EXPECTED_COUNT_FIELD, "").strip() for row in rows
+        }
+        if len(expected_values) != 1:
+            raise ReadError(
+                f"{path}: {SYNTAX_BATCH_EXPECTED_COUNT_FIELD} must be identical "
+                "in every row"
+            )
+        expected_value = next(iter(expected_values))
+        try:
+            expected_count = int(expected_value)
+        except ValueError as error:
+            raise ReadError(
+                f"{path}: invalid {SYNTAX_BATCH_EXPECTED_COUNT_FIELD}: "
+                f"{expected_value!r}"
+            ) from error
+        if expected_count < 1 or str(expected_count) != expected_value:
+            raise ReadError(
+                f"{path}: invalid {SYNTAX_BATCH_EXPECTED_COUNT_FIELD}: "
+                f"{expected_value!r}"
+            )
+    else:
+        expected_count = SYNTAX_BATCH_EXPECTED_COUNTS.get(
+            batch_id, DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT)
     return {
         "batch_id": batch_id,
         "source_file": _relative(path, root),
         "source_type": "syntaxhighlighter_daily",
-        "expected_count": SYNTAX_BATCH_EXPECTED_COUNTS.get(
-            batch_id, DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT),
+        "expected_count": expected_count,
         "batch_sequence": sequence,
         "allocated_at": next(iter(allocated)),
         "articles": articles,

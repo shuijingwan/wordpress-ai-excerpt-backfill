@@ -92,6 +92,35 @@ class SyntaxHighlighterBatchValidationTest(unittest.TestCase):
                 writer = csv.DictWriter(handle, fieldnames=rows[0]); writer.writeheader(); writer.writerows(rows)
             with self.assertRaisesRegex(SafetyError, "English post IDs"): load_batch(path, 20)
 
+    def test_load_uses_partial_batch_fixed_count_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "batch.csv"
+            rows = self.rows(12)
+            for row in rows:
+                row["batch_expected_count"] = "12"
+            fields = list(rows[0])
+
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader(); writer.writerows(rows)
+            self.assertEqual(12, len(load_batch(path, 20)))
+
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader(); writer.writerows(rows[:-1])
+            with self.assertRaisesRegex(SafetyError, "exactly 12, got 11"):
+                load_batch(path, 20)
+
+            rows.append({
+                **rows[-1], "chinese_post_id": "13",
+                "english_post_id": "1013",
+            })
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader(); writer.writerows(rows)
+            with self.assertRaisesRegex(SafetyError, "exactly 12, got 13"):
+                load_batch(path, 20)
+
     def test_one_or_two_syntaxhighlighters_become_zero_and_expected_cbp_passes(self):
         rows = [batch_row(1, 1, 1), batch_row(2, 2, 2)]
         source = Wp(rows); source.posts[2]["content"]["raw"] = cbp("js") + cbp("css")

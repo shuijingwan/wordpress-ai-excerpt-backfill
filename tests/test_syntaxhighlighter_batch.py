@@ -41,6 +41,7 @@ def fixed_batch_row(post_id, sequence=1, **changes):
         "schema_version": 1,
         "batch_id": f"syntaxhighlighter-2026072{sequence}-01",
         "batch_sequence": sequence,
+        "batch_expected_count": 1,
         "allocated_at": f"2026-07-2{sequence}T00:00:00+00:00",
         "chinese_post_id": post_id,
         "english_post_id": post_id + 1000,
@@ -99,6 +100,10 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
         )[:20]]
         self.assertEqual(expected_ids, [item["chinese_post_id"] for item in first])
         self.assertEqual(20, len(first)); self.assertEqual(5, stats["remaining_unallocated_ready"])
+        self.assertEqual(20, stats["requested_count"])
+        self.assertEqual(20, stats["selected_count"])
+        self.assertFalse(stats["final_partial_batch"])
+        self.assertTrue(all(item["batch_expected_count"] == 20 for item in first))
         self.assertTrue(all(item["batch_sequence"] == 1 for item in first))
         self.assertTrue(all(
             item["expected_code_block_pro_count_after"] == item["before_syntaxhighlighter_count"]
@@ -181,7 +186,7 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
                 MODULE.BatchError, rf"{path}.*missing fields"):
             self.build([row(value) for value in range(1, 21)])
 
-    def test_ineligible_rows_never_fill_expected_count(self):
+    def test_only_strictly_eligible_rows_fill_final_partial_batch(self):
         invalid = [
             row(101, preview_status="mixed"), row(102, preview_status="abnormal"),
             row(103, chinese_excerpt_empty="False"), row(104, english_status="draft"),
@@ -189,9 +194,13 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
             row(107, mixed_code_formats="True"), row(108, syntaxhighlighter_count="0"),
             row(109, old_phase1_manifest_member="True"),
         ]
-        with self.assertRaisesRegex(MODULE.BatchError, "expected 20, found 19"):
-            self.build([row(value) for value in range(1, 20)] + invalid)
-        self.assertFalse(self.output.exists())
+        selected, stats = self.build(
+            [row(value) for value in range(1, 20)] + invalid)
+        self.assertEqual(19, len(selected))
+        self.assertEqual(19, stats["strictly_eligible"])
+        self.assertTrue(stats["final_partial_batch"])
+        self.assertTrue(all(item["batch_expected_count"] == 19
+                            for item in selected))
 
     def test_existing_output_is_never_overwritten(self):
         self.output.write_text("keep", encoding="utf-8")
@@ -199,9 +208,25 @@ class SyntaxHighlighterBatchTest(unittest.TestCase):
             self.build([row(value) for value in range(1, 21)])
         self.assertEqual("keep", self.output.read_text(encoding="utf-8"))
 
-    def test_expected_count_is_contract_not_eligibility_relaxation(self):
-        with self.assertRaisesRegex(MODULE.BatchError, "expected 20, found 1"):
-            self.build([row(1)] + [row(value, preview_status="mixed") for value in range(2, 30)])
+    def test_twelve_candidates_create_fixed_final_partial_batch(self):
+        selected, stats = self.build([row(value) for value in range(1, 13)])
+        self.assertEqual(12, len(selected))
+        self.assertEqual(12, stats["selected_count"])
+        self.assertEqual(0, stats["remaining_unallocated_ready"])
+        self.assertTrue(stats["final_partial_batch"])
+        self.assertTrue(all(item["batch_expected_count"] == 12
+                            for item in selected))
+
+    def test_exactly_twenty_is_not_partial(self):
+        selected, stats = self.build([row(value) for value in range(1, 21)])
+        self.assertEqual(20, len(selected))
+        self.assertFalse(stats["final_partial_batch"])
+
+    def test_no_candidates_does_not_create_empty_batch(self):
+        selected, stats = self.build([])
+        self.assertEqual([], selected)
+        self.assertEqual(0, stats["selected_count"])
+        self.assertFalse(stats["final_partial_batch"])
         self.assertFalse(self.output.exists())
 
 
