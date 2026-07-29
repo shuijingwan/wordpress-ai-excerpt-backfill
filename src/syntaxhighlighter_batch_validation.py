@@ -24,6 +24,8 @@ VALIDATION_FIELDS = (
     "after_code_block_pro_count", "code_block_pro_languages",
     "chinese_excerpt_empty", "chinese_status", "chinese_language",
     "english_status", "polylang_relation_status", "gutenberg_balanced",
+    "before_editor_format", "after_editor_format",
+    "classic_outside_blocks_after",
     "validation_status", "validation_reasons",
 )
 REQUIRED_BATCH_FIELDS = {
@@ -156,6 +158,14 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
     after_sh = analysis["syntaxhighlighter_count"]
     after_cbp = counts.get("kevinbatdorf/code-block-pro", 0)
     after_hash = sha256_text(content)
+    after_editor_format = analysis["editor_format"]
+    classic_outside_blocks_after = (
+        "CLASSIC_SUBSTANTIAL_OUTSIDE_BLOCKS" in analysis["matched_rule_ids"]
+    )
+    mixed_stage = (
+        row.get("source_migration_type", "").strip()
+        == "mixed-syntaxhighlighter-to-gutenberg-code-block-pro"
+    )
     expected_cbp = int(row["expected_code_block_pro_count_after"])
     relation_ok = bool(
         isinstance(polylang, dict)
@@ -192,6 +202,11 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
          "code-block-pro-attributes-invalid"),
     )
     abnormal.extend(reason for passed, reason in checks if not passed)
+    if mixed_stage:
+        if after_editor_format != "gutenberg":
+            abnormal.append("editor-format-not-gutenberg")
+        if classic_outside_blocks_after:
+            abnormal.append("classic-outside-blocks-remain")
     other_formats = set(analysis["code_format_families"]) - {
         "code-block-pro", "syntaxhighlighter"
     }
@@ -219,6 +234,9 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
         "english_status": english.get("status"),
         "polylang_relation_status": "normal" if relation_ok else "abnormal",
         "gutenberg_balanced": analysis["blocks"]["balanced"],
+        "before_editor_format": row.get("source_editor_format", ""),
+        "after_editor_format": after_editor_format,
+        "classic_outside_blocks_after": classic_outside_blocks_after,
         "validation_status": status, "validation_reasons": "|".join(reasons),
     }
 

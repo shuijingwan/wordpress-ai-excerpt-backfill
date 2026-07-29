@@ -70,6 +70,7 @@ PILOT_BATCH = {
     "expected_count": 1,
 }
 SYNTAX_GLOB = "syntaxhighlighter-migration-batch-*.csv"
+MIXED_SYNTAX_GLOB = "mixed-syntaxhighlighter-migration-batch-*.csv"
 DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT = 20
 SYNTAX_BATCH_EXPECTED_COUNTS = {
     "syntaxhighlighter-20260722-01": 20,
@@ -84,6 +85,21 @@ SYNTAX_FIXED_FIELDS = {
     "before_code_block_pro_count", "migration_status", "validation_status",
 }
 SYNTAX_BATCH_EXPECTED_COUNT_FIELD = "batch_expected_count"
+MIXED_SYNTAX_FIXED_FIELDS = (
+    SYNTAX_FIXED_FIELDS
+    - {"before_content_sha256"}
+    | {
+        "source_editor_format", "target_editor_format",
+        "source_migration_type", "content_sha256",
+        "snapshot_id", "snapshot_generated_at",
+    }
+)
+SYNTAX_SOURCE_TYPES = {
+    "syntaxhighlighter_daily", "mixed_syntaxhighlighter_daily",
+}
+MIXED_SOURCE_MIGRATION_TYPE = (
+    "mixed-syntaxhighlighter-to-gutenberg-code-block-pro"
+)
 MANIFEST_FIELDS = {
     "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
 }
@@ -185,16 +201,62 @@ def _load_manifest_batch(root, definition):
     }
 
 
-def _load_syntax_batch(path, root):
+def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
     rows, fields = _read_csv(path)
-    _required(fields, SYNTAX_FIXED_FIELDS, path)
+    required = (
+        MIXED_SYNTAX_FIXED_FIELDS
+        if source_type == "mixed_syntaxhighlighter_daily"
+        else SYNTAX_FIXED_FIELDS
+    )
+    _required(fields, required, path)
     if not rows:
         raise ReadError(f"{path}: fixed batch is empty")
+    if source_type == "mixed_syntaxhighlighter_daily":
+        expected_values = {
+            "source_editor_format": "mixed",
+            "target_editor_format": "gutenberg",
+            "source_migration_type": MIXED_SOURCE_MIGRATION_TYPE,
+        }
+        for field, expected in expected_values.items():
+            if any(row.get(field, "").strip() != expected for row in rows):
+                raise ReadError(
+                    f"{path}: {field} must be {expected!r} in every row")
+        for position, row in enumerate(rows, 1):
+            content_sha256 = row.get("content_sha256", "").strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
+                raise ReadError(
+                    f"{path}: row {position}: content_sha256 must be lowercase SHA-256")
+            if not row.get("snapshot_id", "").strip():
+                raise ReadError(f"{path}: row {position}: snapshot_id is required")
+            generated = row.get("snapshot_generated_at", "").strip()
+            try:
+                datetime.fromisoformat(generated.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ReadError(
+                    f"{path}: row {position}: invalid snapshot_generated_at"
+                ) from error
+            row["before_content_sha256"] = content_sha256
     batch_ids = {row.get("batch_id", "").strip() for row in rows}
     sequences = {row.get("batch_sequence", "").strip() for row in rows}
     allocated = {row.get("allocated_at", "").strip() for row in rows}
     if len(batch_ids) != 1 or not next(iter(batch_ids)):
         raise ReadError(f"{path}: batch_id must be non-empty and identical in every row")
+    if source_type == "mixed_syntaxhighlighter_daily":
+        prefix = "mixed-syntaxhighlighter-migration-batch-"
+        expected_batch_id = (
+            "mixed-syntaxhighlighter-"
+            + path.name[len(prefix):-len(".csv")]
+        )
+        if next(iter(batch_ids)) != expected_batch_id:
+            raise ReadError(
+                f"{path}: batch_id must match filename: {expected_batch_id}")
+        snapshot_ids = {row["snapshot_id"].strip() for row in rows}
+        snapshot_times = {
+            row["snapshot_generated_at"].strip() for row in rows
+        }
+        if len(snapshot_ids) != 1 or len(snapshot_times) != 1:
+            raise ReadError(
+                f"{path}: snapshot identity must be identical in every row")
     if len(sequences) != 1:
         raise ReadError(f"{path}: batch_sequence must be identical in every row")
     try:
@@ -236,7 +298,7 @@ def _load_syntax_batch(path, root):
     return {
         "batch_id": batch_id,
         "source_file": _relative(path, root),
-        "source_type": "syntaxhighlighter_daily",
+        "source_type": source_type,
         "expected_count": expected_count,
         "batch_sequence": sequence,
         "allocated_at": next(iter(allocated)),
@@ -256,13 +318,16 @@ def discover_batches(root, errors):
     if not analysis.is_dir():
         errors.append(f"{analysis}: analysis directory is missing")
         return batches
-    for path in sorted(analysis.glob(SYNTAX_GLOB), key=lambda item: item.name):
-        if path.name.endswith(DERIVED_SUFFIXES):
-            continue
-        try:
-            batches.append(_load_syntax_batch(path, root))
-        except ReadError as error:
-            errors.append(str(error))
+    for pattern, source_type in (
+            (SYNTAX_GLOB, "syntaxhighlighter_daily"),
+            (MIXED_SYNTAX_GLOB, "mixed_syntaxhighlighter_daily")):
+        for path in sorted(analysis.glob(pattern), key=lambda item: item.name):
+            if path.name.endswith(DERIVED_SUFFIXES):
+                continue
+            try:
+                batches.append(_load_syntax_batch(path, root, source_type))
+            except ReadError as error:
+                errors.append(str(error))
     batches.sort(key=lambda batch: (
         batch["batch_sequence"] is not None,
         batch["batch_sequence"] if batch["batch_sequence"] is not None else 0,
@@ -378,10 +443,13 @@ def read_execution_states(root, errors):
 
 def _derived_batch_id(path, suffix):
     stem = path.name[:-len(suffix)]
-    prefix = "syntaxhighlighter-migration-batch-"
-    if not stem.startswith(prefix):
-        return None
-    return "syntaxhighlighter-" + stem[len(prefix):]
+    for prefix, batch_prefix in (
+            ("syntaxhighlighter-migration-batch-", "syntaxhighlighter-"),
+            ("mixed-syntaxhighlighter-migration-batch-",
+             "mixed-syntaxhighlighter-")):
+        if stem.startswith(prefix):
+            return batch_prefix + stem[len(prefix):]
+    return None
 
 
 def read_validation_evidence(root, batches, errors):
@@ -571,7 +639,7 @@ def _workflow_mapping(batch, execution, validation):
                 f"Chinese post {execution['chinese_post_id']}")
         return mapping[status], True, (
             f"imported from existing execution evidence with status={status}")
-    if batch["source_type"] == "syntaxhighlighter_daily" and validation is None:
+    if batch["source_type"] in SYNTAX_SOURCE_TYPES and validation is None:
         return "awaiting_manual_conversion", False, (
             "fixed SyntaxHighlighter article has no validation or execution evidence")
     raise ReadError(
@@ -581,10 +649,13 @@ def _workflow_mapping(batch, execution, validation):
 
 def _manual_evidence(batch, legacy_import):
     if not legacy_import:
-        return {
+        evidence = {
             "manual_conversion": {"status": "not_recorded"},
             "language_review": {"status": "not_recorded"},
         }
+        if batch["source_type"] == "mixed_syntaxhighlighter_daily":
+            evidence["gutenberg_normalization"] = {"status": "not_recorded"}
+        return evidence
     if batch["source_type"] == "gutenberg_code_block_pro":
         conversion = "not_applicable"
     else:
@@ -1307,7 +1378,8 @@ def _persist_transition(root, state_path, state, event):
 
 
 def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
-                   language_review_confirmed):
+                   language_review_confirmed,
+                   gutenberg_normalization_confirmed=False):
     if not language_review_confirmed:
         raise ReadError("--language-review-confirmed is required")
     if syntax_count_before < 1 or cbp_count_after < 0:
@@ -1320,8 +1392,13 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
         if article is None:
             raise ReadError(f"Chinese post {post_id} is outside fixed batches")
         batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
-        if batch["source_type"] != "syntaxhighlighter_daily":
+        if batch["source_type"] not in SYNTAX_SOURCE_TYPES:
             raise ReadError("mark-converted only accepts SyntaxHighlighter daily batches")
+        mixed_stage = batch["source_type"] == "mixed_syntaxhighlighter_daily"
+        if mixed_stage and not gutenberg_normalization_confirmed:
+            raise ReadError(
+                "--gutenberg-normalization-confirmed is required for mixed "
+                "SyntaxHighlighter batches")
         state = states.get(int(post_id))
         if state is None:
             raise ReadError(f"coordination state is missing for Chinese post {post_id}")
@@ -1340,6 +1417,11 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
                 and state["manual_conversion"].get("cbp_count_after")
                 == cbp_count_after
                 and state.get("language_review", {}).get("status") == "confirmed"
+                and (
+                    not mixed_stage
+                    or state.get("gutenberg_normalization", {}).get("status")
+                    == "confirmed"
+                )
             )
             if same:
                 return {
@@ -1360,18 +1442,24 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
         state["language_review"] = {
             "status": "confirmed", "confirmed_at": timestamp,
         }
+        if mixed_stage:
+            state["gutenberg_normalization"] = {
+                "status": "confirmed", "confirmed_at": timestamp,
+            }
         state["updated_at"] = timestamp
         evidence = {
             "syntax_count_before": syntax_count_before,
             "cbp_count_after": cbp_count_after,
             "language_review_confirmed": True,
+            "gutenberg_normalization_confirmed": mixed_stage,
         }
         event = _transition_event(
             "manual_conversion_and_language_review_confirmed", state,
             previous, state["workflow_status"],
             "manual conversion and per-block language review explicitly confirmed",
             evidence, timestamp,
-            f"{syntax_count_before}|{cbp_count_after}|language-confirmed",
+            f"{syntax_count_before}|{cbp_count_after}|language-confirmed|"
+            f"gutenberg-normalized={mixed_stage}",
         )
         _persist_transition(
             root, _state_path(root, state["batch_id"], int(post_id)), state, event)
@@ -1488,6 +1576,18 @@ def _validation_result(path, batch, article, state):
             _validation_int(row, "after_code_block_pro_count", path)
             <= expected_cbp,
     }
+    if batch["source_type"] == "mixed_syntaxhighlighter_daily":
+        checks.update({
+            "before_editor_format":
+                _validation_text(row, "before_editor_format", path) == "mixed",
+            "after_editor_format":
+                _validation_text(row, "after_editor_format", path) == "gutenberg",
+            "classic_outside_blocks_after":
+                not _true_field(row, "classic_outside_blocks_after"),
+            "gutenberg_normalization_confirmed":
+                state.get("gutenberg_normalization", {}).get("status")
+                == "confirmed",
+        })
     status = _validation_text(row, "validation_status", path)
     if status not in {"ready", "pending", "abnormal"}:
         raise ReadError(f"{path}: unknown validation_status {status!r}")
@@ -1589,7 +1689,8 @@ def _atomic_write_csv(path, fields, rows):
         Path(temporary).unlink(missing_ok=True)
 
 
-def _execution_manifest_row(article, validation_row, source):
+def _execution_manifest_row(article, validation_row, source,
+                            source_type="syntaxhighlighter_daily"):
     from src.candidate_execution import sha256_text
     from src.single_candidate_flow import raw_field
 
@@ -1611,7 +1712,11 @@ def _execution_manifest_row(article, validation_row, source):
         "execution_status": "pending",
         "chinese_post_status": validation_row["chinese_status"],
         "chinese_language": validation_row["chinese_language"],
-        "source_migration_type": "syntaxhighlighter-to-code-block-pro",
+        "source_migration_type": (
+            MIXED_SOURCE_MIGRATION_TYPE
+            if source_type == "mixed_syntaxhighlighter_daily"
+            else "syntaxhighlighter-to-code-block-pro"
+        ),
         "expected_code_block_pro_count":
             validation_row["after_code_block_pro_count"],
         "expected_syntaxhighlighter_count": 0,
@@ -1628,7 +1733,7 @@ def validate_live(root, post_id, source_factory=None, refresh=False):
             raise ReadError(f"Chinese post {post_id} is outside fixed batches")
         batch = next(
             item for item in batches if item["batch_id"] == article["batch_id"])
-        if batch["source_type"] != "syntaxhighlighter_daily":
+        if batch["source_type"] not in SYNTAX_SOURCE_TYPES:
             raise ReadError("validate-live only accepts SyntaxHighlighter daily batches")
         state = states.get(int(post_id))
         if state is None:
@@ -1694,7 +1799,8 @@ def validate_live(root, post_id, source_factory=None, refresh=False):
             if rows[0]["validation_status"] == "ready":
                 _atomic_write_csv(
                     temporary_manifest, EXECUTION_MANIFEST_FIELDS,
-                    [_execution_manifest_row(article, rows[0], source)])
+                    [_execution_manifest_row(
+                        article, rows[0], source, batch["source_type"])])
             # Prove the new CSV can form state evidence before replacing any
             # previously recorded validation files.
             _validation_result(
@@ -3398,6 +3504,8 @@ def parse_args(argv=None):
     converted.add_argument("--cbp-count-after", required=True, type=int)
     converted.add_argument("--language-review-confirmed", required=True,
                            action="store_true")
+    converted.add_argument("--gutenberg-normalization-confirmed",
+                           action="store_true")
     converted.add_argument("--repo-root", type=Path, default=repository_root(),
                            help=argparse.SUPPRESS)
     validation = subparsers.add_parser(
@@ -3492,7 +3600,8 @@ def main(argv=None):
         elif args.command == "mark-converted":
             result = mark_converted(
                 args.repo_root, args.post_id, args.syntax_count_before,
-                args.cbp_count_after, args.language_review_confirmed)
+                args.cbp_count_after, args.language_review_confirmed,
+                args.gutenberg_normalization_confirmed)
             output = json.dumps(result, ensure_ascii=False, sort_keys=True)
         elif args.command == "record-validation":
             result = record_validation(

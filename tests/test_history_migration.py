@@ -23,6 +23,13 @@ SYNTAX_FIELDS = [
     "before_content_sha256", "before_syntaxhighlighter_count",
     "before_code_block_pro_count", "migration_status", "validation_status",
 ]
+MIXED_FIELDS = [
+    field for field in SYNTAX_FIELDS if field != "before_content_sha256"
+] + [
+    "batch_expected_count", "source_editor_format", "target_editor_format",
+    "source_migration_type", "content_sha256", "snapshot_id",
+    "snapshot_generated_at", "expected_code_block_pro_count_after",
+]
 MANIFEST_FIELDS = [
     "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
 ]
@@ -96,6 +103,38 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         if batch_expected_count is not None and fields is None:
             output_fields = SYNTAX_FIELDS + ["batch_expected_count"]
         self.write_csv(path, output_fields, values)
+        return path, batch_id
+
+    def write_mixed_batch(self, pairs, sequence=1, suffix="20260801-01"):
+        path = (
+            self.root / "data/analysis"
+            / f"mixed-syntaxhighlighter-migration-batch-{suffix}.csv"
+        )
+        batch_id = f"mixed-syntaxhighlighter-{suffix}"
+        values = [{
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "batch_sequence": sequence,
+            "batch_expected_count": len(pairs),
+            "allocated_at": "2026-08-01T00:00:00+00:00",
+            "chinese_post_id": chinese,
+            "english_post_id": english,
+            "chinese_title": f"标题 {chinese}",
+            "published_at": "2024-01-01 00:00:00",
+            "before_syntaxhighlighter_count": 1,
+            "before_code_block_pro_count": 0,
+            "expected_code_block_pro_count_after": 1,
+            "migration_status": "pending",
+            "validation_status": "not-checked",
+            "source_editor_format": "mixed",
+            "target_editor_format": "gutenberg",
+            "source_migration_type":
+                "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
+            "content_sha256": "f" * 64,
+            "snapshot_id": "snapshot-20260801",
+            "snapshot_generated_at": "2026-08-01T00:00:00+00:00",
+        } for chinese, english in pairs]
+        self.write_csv(path, MIXED_FIELDS, values)
         return path, batch_id
 
     def write_execution(self, chinese, english, status="completed", raw=None):
@@ -344,6 +383,90 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             item for item in result["batches"]
             if item["batch_id"] == "syntaxhighlighter-20260722-01"
         )["validation_evidence_count"])
+
+    def test_discovers_old_and_mixed_batches_as_separate_families(self):
+        _, old_id = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv",
+            [(301, 1301)])
+        _, mixed_id = self.write_mixed_batch([(501, 1501)], sequence=2)
+        errors = []
+        batches = MODULE.discover_batches(self.root, errors)
+        self.assertEqual([], errors)
+        by_id = {batch["batch_id"]: batch for batch in batches}
+        self.assertEqual("syntaxhighlighter_daily", by_id[old_id]["source_type"])
+        self.assertEqual(
+            "mixed_syntaxhighlighter_daily", by_id[mixed_id]["source_type"])
+        self.assertNotEqual(old_id, mixed_id)
+        self.assertEqual(
+            "f" * 64,
+            by_id[mixed_id]["articles"][0]["source_row"][
+                "before_content_sha256"])
+
+    def test_mixed_manifest_contract_is_strict(self):
+        path, _ = self.write_mixed_batch([(501, 1501)])
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0]["target_editor_format"] = "mixed"
+        self.write_csv(path, MIXED_FIELDS, rows)
+        errors = []
+        MODULE.discover_batches(self.root, errors)
+        self.assertTrue(any(
+            "target_editor_format must be 'gutenberg'" in error
+            for error in errors))
+
+    def test_mixed_manual_conversion_requires_normalization_confirmation(self):
+        self.write_execution(100, 1100)
+        self.write_execution(200, 1200)
+        _, batch_id = self.write_mixed_batch([(501, 1501)])
+        MODULE.init_state(self.root, apply=True)
+        with self.assertRaisesRegex(
+                MODULE.ReadError, "gutenberg-normalization-confirmed"):
+            MODULE.mark_converted(self.root, 501, 1, 1, True)
+        state = MODULE.mark_converted(
+            self.root, 501, 1, 1, True,
+            gutenberg_normalization_confirmed=True)
+        self.assertEqual(
+            "awaiting_readonly_validation", state["workflow_status"])
+        saved = json.loads(MODULE._state_path(
+            self.root, batch_id, 501).read_text(encoding="utf-8"))
+        self.assertEqual(
+            "confirmed", saved["gutenberg_normalization"]["status"])
+        self.assertEqual("confirmed", saved["manual_conversion"]["status"])
+        self.assertEqual("confirmed", saved["language_review"]["status"])
+
+    def test_execution_manifest_distinguishes_migration_source(self):
+        article = {
+            "chinese_post_id": 401, "english_post_id": 1401,
+            "title": "标题 401",
+        }
+        row = self.validation_row()
+        source = self.fake_source()
+        old = MODULE._execution_manifest_row(article, row, source)
+        mixed = MODULE._execution_manifest_row(
+            article, row, source, "mixed_syntaxhighlighter_daily")
+        self.assertEqual(
+            "syntaxhighlighter-to-code-block-pro",
+            old["source_migration_type"])
+        self.assertEqual(
+            "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
+            mixed["source_migration_type"])
+
+    def test_status_keeps_old_and_mixed_batches_separate(self):
+        self.write_execution(100, 1100)
+        self.write_execution(200, 1200)
+        _, old_id = self.write_batch(
+            "syntaxhighlighter-migration-batch-20260721-01.csv",
+            [(301, 1301)])
+        self.write_execution(301, 1301)
+        _, mixed_id = self.write_mixed_batch([(501, 1501)], sequence=2)
+        result = self.status()
+        by_id = {batch["batch_id"]: batch for batch in result["batches"]}
+        self.assertIn(old_id, by_id)
+        self.assertIn(mixed_id, by_id)
+        self.assertEqual(
+            "syntaxhighlighter_daily", by_id[old_id]["source_type"])
+        self.assertEqual(
+            "mixed_syntaxhighlighter_daily", by_id[mixed_id]["source_type"])
 
     def test_completed_and_missing_execution_evidence(self):
         self.write_execution(100, 1100)

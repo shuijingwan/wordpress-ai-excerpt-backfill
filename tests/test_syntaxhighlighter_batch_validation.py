@@ -194,6 +194,50 @@ class SyntaxHighlighterBatchValidationTest(unittest.TestCase):
         source.posts[1001]["content"]["raw"] = "different and no code block"
         self.assertEqual("ready", self.validate(rows, source)[0]["validation_status"])
 
+    def test_mixed_stage_rejects_classic_content_outside_balanced_blocks(self):
+        row = batch_row(1)
+        row.update({
+            "source_editor_format": "mixed",
+            "source_migration_type":
+                "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
+        })
+        source = Wp([row])
+        source.posts[1]["content"]["raw"] = "classic paragraph" + cbp()
+        result = self.validate([row], source)[0]
+        self.assertEqual("abnormal", result["validation_status"])
+        self.assertEqual("mixed", result["after_editor_format"])
+        self.assertTrue(result["classic_outside_blocks_after"])
+        self.assertIn(
+            "editor-format-not-gutenberg", result["validation_reasons"])
+        self.assertIn(
+            "classic-outside-blocks-remain", result["validation_reasons"])
+
+    def test_mixed_stage_accepts_normalized_gutenberg_content(self):
+        row = batch_row(1)
+        row.update({
+            "source_editor_format": "mixed",
+            "source_migration_type":
+                "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
+        })
+        source = Wp([row])
+        source.posts[1]["content"]["raw"] = (
+            "<!-- wp:paragraph --><p>normalized</p><!-- /wp:paragraph -->"
+            + cbp()
+        )
+        result = self.validate([row], source)[0]
+        self.assertEqual("ready", result["validation_status"])
+        self.assertEqual("mixed", result["before_editor_format"])
+        self.assertEqual("gutenberg", result["after_editor_format"])
+        self.assertFalse(result["classic_outside_blocks_after"])
+
+    def test_old_stage_does_not_require_editor_normalization(self):
+        row = batch_row(1)
+        source = Wp([row])
+        source.posts[1]["content"]["raw"] = "classic paragraph" + cbp()
+        result = self.validate([row], source)[0]
+        self.assertEqual("ready", result["validation_status"])
+        self.assertEqual("mixed", result["after_editor_format"])
+
     def test_existing_outputs_are_not_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "validation.csv"; snapshot = Path(directory) / "snapshot.jsonl"
