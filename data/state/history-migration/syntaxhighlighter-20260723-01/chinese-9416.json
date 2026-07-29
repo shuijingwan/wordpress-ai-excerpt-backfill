@@ -4,22 +4,64 @@
   "blocked_reasons": [],
   "chinese_post_id": 9416,
   "english_post_id": 11106,
-  "execution_evidence": null,
+  "execution_evidence": {
+    "sha256": "c2d29845fab070cd9229dfbe8ee00832f86e4815914f5aed21466a57dd13cff2",
+    "source_file": "data/backups/single-candidate/chinese-9416.execution.json",
+    "status": "completed"
+  },
   "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
   "initialized_at": "2026-07-23T12:54:15.260528+00:00",
   "language_review": {
-    "status": "not_recorded"
+    "confirmed_at": "2026-07-24T09:20:42.627207+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "occurred_at": "2026-07-24T09:59:45.085234+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 97, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 89, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 329, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 74, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 500\n",
+    "stdout_summary": ""
   },
   "legacy_import": false,
   "manual_conversion": {
-    "status": "not_recorded"
+    "cbp_count_after": 17,
+    "confirmed_at": "2026-07-24T09:20:42.627207+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 17
   },
-  "retry_counts": {},
+  "retry_counts": {
+    "resume": 3,
+    "run": 1
+  },
   "schema_version": 1,
   "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260723-01.csv",
   "source_batch_sha256": "72cff1998e7636a4bf225e3a78bda9f928eee9d9b436eae7add3a69321f9ae17",
   "source_row_sha256": "a469c788d786bc7babb891aae1185757005512db224ad6d1a56fbb4cbbd7358b",
-  "updated_at": "2026-07-23T12:54:15.260528+00:00",
-  "validation_evidence": null,
-  "workflow_status": "awaiting_manual_conversion"
+  "updated_at": "2026-07-24T10:58:00.527405+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "d9f063761b7954d9215f068e539fc37c89990e4f08a51ffd14b8b45532dd63ef",
+    "checks": {
+      "before_cbp_count": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "32a1675bceb958d7b39cf7efade6ae21babf52b5c211d594b9d85e594f2a4897",
+    "source_file": "data/analysis/history-migration-validation/syntaxhighlighter-20260723-01/chinese-9416.csv",
+    "status": "ready",
+    "validated_at": "2026-07-24T09:21:18.864471+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
 }

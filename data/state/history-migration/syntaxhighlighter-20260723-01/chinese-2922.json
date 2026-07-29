@@ -4,7 +4,11 @@
   "blocked_reasons": [],
   "chinese_post_id": 2922,
   "english_post_id": 11557,
-  "execution_evidence": null,
+  "execution_evidence": {
+    "sha256": "7eee553c92159d3b569bfdef06551f9f5ace21494196c9b709af89fcec329ac3",
+    "source_file": "data/backups/single-candidate/chinese-2922.execution.json",
+    "status": "completed"
+  },
   "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
   "initialized_at": "2026-07-23T12:54:15.260528+00:00",
   "language_review": {
@@ -36,13 +40,14 @@
     "status": "applied"
   },
   "retry_counts": {
-    "run": 1
+    "resume": 1,
+    "run": 2
   },
   "schema_version": 1,
   "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260723-01.csv",
   "source_batch_sha256": "72cff1998e7636a4bf225e3a78bda9f928eee9d9b436eae7add3a69321f9ae17",
   "source_row_sha256": "4a1aa0af7d0ce5d952ce184a9999b6207d2d8116bbe8f80380c4c8ef6f633976",
-  "updated_at": "2026-07-23T14:23:30.013305+00:00",
+  "updated_at": "2026-07-24T03:06:20.917138+00:00",
   "validation_evidence": {
     "after_content_sha256": "82736c4eef7c04912c5d30f8f9feab7e52bd3a304044965708c8521fb8ea253c",
     "checks": {
@@ -66,5 +71,5 @@
     "validated_at": "2026-07-23T13:53:00.918040+00:00"
   },
   "validation_failure_reasons": [],
-  "workflow_status": "ready_for_execution"
+  "workflow_status": "completed"
 }

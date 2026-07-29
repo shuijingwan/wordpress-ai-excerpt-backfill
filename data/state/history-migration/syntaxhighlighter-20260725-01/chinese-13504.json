@@ -1,0 +1,74 @@
+{
+  "batch_id": "syntaxhighlighter-20260725-01",
+  "batch_position": 16,
+  "blocked_reasons": [],
+  "chinese_post_id": 13504,
+  "english_post_id": 13514,
+  "execution_evidence": {
+    "sha256": "c4acbe68b3c4ffc4249031d578755de54b621993ebf9de16fa3e1ff0e31b6ed4",
+    "source_file": "data/backups/single-candidate/chinese-13504.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-25T12:09:36.724362+00:00",
+  "language_review": {
+    "confirmed_at": "2026-07-25T13:08:37.175776+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "occurred_at": "2026-07-25T14:36:33.127433+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 45, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 305, in _read_status\n    raise RemoteDisconnected(\"Remote end closed connection without\"\n                             \" response\")\nhttp.client.RemoteDisconnected: Remote end closed connection without response\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 97, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 89, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 316, in execute\n    self.wp.update_excerpt(zh_id, excerpt)\n    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 30, in update_excerpt\n    return request_json(self.transport, \"POST\",\n                        f\"{BASE_URL}/wp-json/wp/v2/posts/{int(post_id)}?context=edit\",\n                        self._headers(), {\"excerpt\": excerpt}, self.timeout)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 56, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 50, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: RemoteDisconnected\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 12,
+    "confirmed_at": "2026-07-25T13:08:37.175776+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 12
+  },
+  "recovery": {
+    "action": "restart",
+    "execution_sha256": "68bb2b749ec29fe330d2b0e0ba66b341ace4e6981254cada5779a520b6281f13",
+    "execution_status": "excerpt_generated",
+    "recovered_at": "2026-07-25T14:38:18.776365+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260725-01.csv",
+  "source_batch_sha256": "493637f554ba29bb44f81a0d5d99a1fbfbb929802902d93621f04006cb9cfdea",
+  "source_row_sha256": "1b2187b906249b1588022b16f35f90170f7b0e531e25fa71cc6df9d1a934bbf2",
+  "updated_at": "2026-07-25T14:40:13.452000+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "bcfe83fecac70a206af846f0644f57aaeaa7f90252c2b8e820898438497c046f",
+    "checks": {
+      "before_cbp_count": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "0c28026564d217f8fbcfbb9d33db28a03588b0228a1ea4589bfc814ffb3b56b6",
+    "source_file": "data/analysis/history-migration-validation/syntaxhighlighter-20260725-01/chinese-13504.csv",
+    "status": "ready",
+    "validated_at": "2026-07-25T13:16:44.892782+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

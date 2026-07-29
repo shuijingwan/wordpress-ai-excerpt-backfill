@@ -1,0 +1,57 @@
+{
+  "batch_id": "syntaxhighlighter-20260728-01",
+  "batch_position": 10,
+  "blocked_reasons": [],
+  "chinese_post_id": 17229,
+  "english_post_id": 17235,
+  "execution_evidence": {
+    "sha256": "d05fd0f074a427bf97840800ff638b9ad05dc8353a0f5545cc2827624fbf57c8",
+    "source_file": "data/backups/single-candidate/chinese-17229.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-28T13:04:47.051327+00:00",
+  "language_review": {
+    "confirmed_at": "2026-07-28T13:36:13.080950+00:00",
+    "status": "confirmed"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 5,
+    "confirmed_at": "2026-07-28T13:36:13.080950+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 5
+  },
+  "retry_counts": {
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260728-01.csv",
+  "source_batch_sha256": "d9b23558592984cb856c7d443b5caf79a7ea27d915d81b8dbba8a1f7d793c223",
+  "source_row_sha256": "73d44641b4a7a044a16882773398ee1a73e41aaf8e0d0fc3bc57b2365dea0297",
+  "updated_at": "2026-07-28T14:05:41.486392+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "fb1597390c03fe5f7a60fab4f7acb08bafdbd106069f782b69b7a4206e270ef7",
+    "checks": {
+      "before_cbp_count": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "6ecaae28118387183916b8e0bd7fd7114d09f457d09c9414817a6b58cda0e8ae",
+    "source_file": "data/analysis/history-migration-validation/syntaxhighlighter-20260728-01/chinese-17229.csv",
+    "status": "ready",
+    "validated_at": "2026-07-28T13:43:44.867191+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

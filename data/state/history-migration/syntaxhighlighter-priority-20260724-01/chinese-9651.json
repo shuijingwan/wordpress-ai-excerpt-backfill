@@ -1,0 +1,75 @@
+{
+  "batch_id": "syntaxhighlighter-priority-20260724-01",
+  "batch_position": 3,
+  "blocked_reasons": [],
+  "chinese_post_id": 9651,
+  "english_post_id": 9763,
+  "execution_evidence": {
+    "sha256": "169c79df89ba1d2c09cb6905afd8159dd277d60f9dba2888840eca29a4af4acd",
+    "source_file": "data/backups/single-candidate/chinese-9651.execution.json",
+    "status": "completed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-24T03:32:08.169504+00:00",
+  "language_review": {
+    "confirmed_at": "2026-07-24T03:32:15.801466+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "occurred_at": "2026-07-24T03:54:26.592510+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 97, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 89, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 296, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 47, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 74, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 2,
+    "confirmed_at": "2026-07-24T03:32:15.801466+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 2
+  },
+  "recovery": {
+    "action": "restart",
+    "chinese_excerpt_empty": null,
+    "execution_sha256": "5295bd1aac75f6965e6ed77ba49ec8b0c3deb0c1cddaa653d4d2952d35587b7a",
+    "execution_status": "prepared",
+    "recovered_at": "2026-07-24T05:10:24.018556+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/syntaxhighlighter-migration-batch-20260724-01.csv",
+  "source_batch_sha256": "7bade5f9011b7ab7b40e6d35ac83f5c613d7cde9c9cbc2a3fed770481ee71f82",
+  "source_row_sha256": "030aa8f198e18afda3ceabc14560903295d96651655911485aa4c7d5e309e928",
+  "updated_at": "2026-07-24T06:36:15.357480+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "8996763cf167d475efd1db9d49a1f799712f277e460e9cc2382d7e5d2882ea1e",
+    "checks": {
+      "before_cbp_count": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "c19ef05e6a3d4335ba8446fc5b94e700f690e16de43b9e94614ea048ab718a4a",
+    "source_file": "data/analysis/history-migration-validation/syntaxhighlighter-priority-20260724-01/chinese-9651.csv",
+    "status": "ready",
+    "validated_at": "2026-07-24T03:32:38.980187+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
