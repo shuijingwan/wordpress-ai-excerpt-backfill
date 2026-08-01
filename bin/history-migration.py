@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -124,6 +125,7 @@ KNOWN_EXECUTION_STATUSES = {
 }
 DERIVED_SUFFIXES = ("-validation.csv", "-execution-candidates.csv")
 EXECUTION_NAME = re.compile(r"^chinese-(?P<post_id>[1-9][0-9]*)\.execution\.json$")
+RESTART_ARCHIVE_ROOT = Path("data/backups/single-candidate/recovery-history")
 
 
 class ReadError(ValueError):
@@ -1843,7 +1845,7 @@ def plan_run(root):
                 continue
             execution = executions.get(article["chinese_post_id"])
             reasons = []
-            if execution is not None:
+            if execution is not None and not _source_restart_prepared(state, execution):
                 reasons.append(
                     "completed execution evidence already exists"
                     if execution["status"] == "completed"
@@ -1858,7 +1860,7 @@ def plan_run(root):
                     "--post-id", str(article["chinese_post_id"]), "--execute"],
                 "validation_evidence": state.get("validation_evidence"),
                 "execution_evidence": execution,
-                "allowed": execution is None,
+                "allowed": execution is None or _source_restart_prepared(state, execution),
                 "blocking_reasons": reasons,
             })
     return {
@@ -1885,6 +1887,24 @@ EXECUTION_STATUS_MAP = {
 def _execution_path(root, post_id):
     return root / "data/backups/single-candidate" / (
         f"chinese-{int(post_id)}.execution.json")
+
+
+def _prewrite_path(root, post_id):
+    return root / "data/backups/single-candidate" / (
+        f"chinese-{int(post_id)}.pre-write.json")
+
+
+def _source_restart_prepared(state, execution):
+    recovery = state.get("source_restart_recovery") or {}
+    evidence = state.get("execution_evidence") or {}
+    return bool(
+        execution and execution["status"] == "prepared"
+        and recovery.get("status") == "applied"
+        and recovery.get("generation") == state.get("recovery_generation")
+        and evidence.get("status") == "prepared"
+        and evidence.get("sha256") == execution.get("sha256")
+        and evidence.get("recovery_generation") == state.get("recovery_generation")
+    )
 
 
 def _execution_details(root, article):
@@ -1953,6 +1973,8 @@ def sync_execution(root, apply=False):
             if state is None or execution is None:
                 continue
             if state["workflow_status"] == "completed":
+                continue
+            if _source_restart_prepared(state, execution):
                 continue
             actions.append({
                 "batch_id": batch["batch_id"],
@@ -2195,6 +2217,9 @@ def _executor_command(root, state, *, resume=False, preflight=False):
         command.append("--execute")
     if resume:
         command.append("--resume")
+    if (not resume and state.get("source_restart_recovery", {}).get("status")
+            == "applied"):
+        command.append("--recovery-restart")
     return command
 
 
@@ -2265,7 +2290,8 @@ def _run_items(root, batch_id=None):
                 and recovery.get("action") in {"restart", "observe"}
                 and recovery.get("execution_sha256") == execution_sha256
             )
-            if execution and not recovered_restart:
+            if execution and not recovered_restart and not _source_restart_prepared(
+                    state, _execution_details(root, article)):
                 reasons.append("execution evidence already exists")
             if _manifest_for(root, state) is None:
                 reasons.append("single-candidate execution manifest is missing")
@@ -2713,11 +2739,13 @@ def _prepare_article_retry(root, post_id, source_factory=None):
     return mode
 
 
-def run_ready(root, execute=False, batch_id=None, runner=subprocess.run,
+def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subprocess.run,
               progress=None, sleeper=time.sleep,
               max_attempts=MAX_ARTICLE_ATTEMPTS,
               retry_delay=ARTICLE_RETRY_DELAY, source_factory=None):
     root, items = _run_items(root, batch_id)
+    if post_id is not None:
+        items = [item for item in items if item["post_id"] == int(post_id)]
     if not execute:
         return {
             "schema_version": SCHEMA_VERSION, "mode": "preview",
@@ -3145,6 +3173,261 @@ def recover_blocked(root, post_id, apply=False):
         }
 
 
+def _read_json_object(path, label):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ReadError(f"{path}: invalid {label} JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ReadError(f"{path}: {label} JSON must be an object")
+    return value
+
+
+def _restart_manifest_row(root, state, article):
+    path = _validation_paths(
+        root, state["batch_id"], article["chinese_post_id"])[2]
+    rows, fields = _read_csv(path)
+    _required(fields, set(EXECUTION_MANIFEST_FIELDS), path)
+    if len(rows) != 1:
+        raise ReadError(f"{path}: expected exactly one execution candidate")
+    row = rows[0]
+    if (_positive_id(row, "chinese_post_id", path, 1)
+            != article["chinese_post_id"]
+            or _positive_id(row, "english_post_id", path, 1)
+            != article["english_post_id"]):
+        raise ReadError(f"{path}: execution candidate post ID mismatch")
+    return path, row
+
+
+def _restart_from_current_plan(root, post_id, source_factory=None):
+    """Read production and prove an old failed execution can be discarded."""
+    from src.candidate_execution import sha256_text
+    from src.single_candidate_flow import build_live
+    from src.batch_readonly_ssh import BatchReadonlySshSource
+
+    root, batches, fixed, _, states = _context(Path(root).resolve())
+    article = fixed.get(int(post_id))
+    if article is None:
+        raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+    state = states.get(int(post_id))
+    if state is None:
+        raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+    batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
+    execution_path = _execution_path(root, post_id)
+    prewrite_path = _prewrite_path(root, post_id)
+    reasons = []
+    if state["workflow_status"] == "completed":
+        reasons.append("completed article cannot restart from current production")
+    elif state["workflow_status"] not in {"blocked", "translation_failed"}:
+        reasons.append(
+            f"workflow_status is {state['workflow_status']}, not blocked or translation_failed")
+    if not execution_path.is_file() or not prewrite_path.is_file():
+        reasons.append("both execution and pre-write evidence are required")
+        return root, article, state, None, None, None, reasons
+    execution = _read_json_object(execution_path, "execution")
+    prewrite = _read_json_object(prewrite_path, "pre-write")
+    for value, name, expected in (
+            (execution.get("chinese_post_id"), "execution Chinese", int(post_id)),
+            (execution.get("english_post_id"), "execution English", article["english_post_id"]),
+            (prewrite.get("chinese_post_id"), "pre-write Chinese", int(post_id)),
+            (prewrite.get("english_post_id"), "pre-write English", article["english_post_id"])):
+        if value != expected:
+            reasons.append(f"{name} post ID mismatch")
+    if execution.get("status") != "translation_failed":
+        reasons.append("execution status is not translation_failed")
+    try:
+        manifest_path, old_manifest = _restart_manifest_row(root, state, article)
+        config = json.loads(
+            (root / "config/classification.json").read_text(encoding="utf-8"))
+        source = (source_factory([article["source_row"]]) if source_factory else
+                  BatchReadonlySshSource.fetch([article["source_row"]]))
+        chinese = source.get_post(article["chinese_post_id"])
+        english = source.get_post(article["english_post_id"])
+        live = build_live(
+            old_manifest, chinese, english,
+            source.check(article["chinese_post_id"], article["english_post_id"]),
+            config)
+    except (SafetyError, OSError, UnicodeError, json.JSONDecodeError) as error:
+        reasons.append(f"production read-only check failed: {error}")
+        return root, article, state, execution, prewrite, None, reasons
+    expected_cbp = int(old_manifest["expected_code_block_pro_count"])
+    expected_syntax = int(old_manifest["expected_syntaxhighlighter_count"])
+    from src.analyzer import analyze_content
+    analysis = analyze_content(live["chinese_content"], config)
+    counts = analysis["blocks"]["counts"]
+    old_generated_excerpt = execution.get("generated_excerpt")
+    old_generated_nonempty = bool(
+        isinstance(old_generated_excerpt, str) and old_generated_excerpt.strip())
+    current_excerpt = live["chinese_excerpt"]
+    current_excerpt_empty = not current_excerpt.strip()
+    current_matches_old_generated = bool(
+        old_generated_nonempty and current_excerpt == old_generated_excerpt)
+    excerpt_state = (
+        "empty" if current_excerpt_empty else
+        "known_previous_generated_excerpt" if current_matches_old_generated else
+        "unknown_nonempty"
+    )
+    checks = {
+        "chinese_id": chinese.get("id") == article["chinese_post_id"],
+        "english_id": english.get("id") == article["english_post_id"],
+        "chinese_publish": live["chinese_status"] == "publish",
+        "english_publish": live["english_status"] == "publish",
+        "polylang_english": live["linked_english_post_id"] == article["english_post_id"],
+        "gutenberg": live["is_gutenberg"],
+        "syntaxhighlighter_zero": analysis["syntaxhighlighter_count"] == expected_syntax == 0,
+        "code_block_pro_count": counts.get("kevinbatdorf/code-block-pro", 0) == expected_cbp,
+        "chinese_excerpt_known_for_restart": (
+            current_excerpt_empty or current_matches_old_generated),
+        "phase1_eligible": live["phase1_eligible"],
+    }
+    old_hashes = prewrite.get("sha256") if isinstance(prewrite.get("sha256"), dict) else {}
+    current_title_sha = sha256_text(live["chinese_title"])
+    source_changed = (
+        current_title_sha != old_hashes.get("chinese_title")
+        or live["chinese_content_sha256"] != old_hashes.get("chinese_content")
+    )
+    checks["chinese_source_changed"] = source_changed
+    checks.update({
+        f"english_{field}_unchanged": live[f"english_{field}_sha256"] == old_hashes.get(f"english_{field}")
+        for field in ("title", "excerpt", "content")
+    })
+    reasons.extend(name for name, passed in checks.items() if not passed)
+    current = {
+        "live": live, "checks": checks, "manifest_path": manifest_path,
+        "old_manifest": old_manifest,
+        "current_chinese_title_sha256": current_title_sha,
+        "current_chinese_content_sha256": live["chinese_content_sha256"],
+        "current_excerpt_sha256": sha256_text(current_excerpt),
+        "old_generated_excerpt_sha256": (
+            sha256_text(old_generated_excerpt) if old_generated_nonempty else None),
+        "current_excerpt_matches_old_generated": current_matches_old_generated,
+        "restart_excerpt_state": excerpt_state,
+    }
+    return root, article, state, execution, prewrite, current, reasons
+
+
+def restart_from_current(root, post_id, apply=False, source_factory=None,
+                         reason="Chinese source edited after failed execution"):
+    root, article, state, execution, prewrite, current, reasons = (
+        _restart_from_current_plan(root, post_id, source_factory))
+    base = {
+        "schema_version": SCHEMA_VERSION, "mode": "apply" if apply else "preview",
+        "repository_root": str(root), "batch_id": state["batch_id"],
+        "chinese_post_id": int(post_id), "english_post_id": article["english_post_id"],
+        "eligible": not reasons, "blocking_reasons": reasons,
+        "previous_status": state["workflow_status"],
+        "new_status": "ready_for_execution" if not reasons else state["workflow_status"],
+        "safety_checks": current["checks"] if current else {},
+        "excerpt_observation": ({
+            "current_excerpt_sha256": current["current_excerpt_sha256"],
+            "old_generated_excerpt_sha256": current["old_generated_excerpt_sha256"],
+            "current_excerpt_matches_old_generated":
+                current["current_excerpt_matches_old_generated"],
+            "restart_excerpt_state": current["restart_excerpt_state"],
+        } if current else {}),
+        "changed": False, "writes_performed": False, "integrity_ok": True,
+    }
+    if not apply or reasons:
+        return base
+    with InitLock(root):
+        root, article, state, execution, prewrite, current, reasons = (
+            _restart_from_current_plan(root, post_id, source_factory))
+        if reasons:
+            return {**base, "eligible": False, "blocking_reasons": reasons,
+                    "new_status": state["workflow_status"]}
+        from src.candidate_execution import backup_record
+        timestamp = datetime.now(timezone.utc)
+        timestamp_text = timestamp.isoformat()
+        generation = int(state.get("recovery_generation", 0)) + 1
+        archive = root / RESTART_ARCHIVE_ROOT / (
+            f"chinese-{int(post_id)}") / timestamp.strftime("%Y%m%dT%H%M%S.%fZ")
+        archive.mkdir(parents=True, mode=0o700)
+        execution_path = _execution_path(root, post_id)
+        prewrite_path = _prewrite_path(root, post_id)
+        old_execution_sha = _file_sha256(execution_path)
+        old_prewrite_sha = _file_sha256(prewrite_path)
+        shutil.copy2(execution_path, archive / execution_path.name)
+        shutil.copy2(prewrite_path, archive / prewrite_path.name)
+        recovery_snapshot = {
+            "schema_version": 1, "batch_id": state["batch_id"],
+            "chinese_post_id": int(post_id), "english_post_id": article["english_post_id"],
+            "recovery_generation": generation, "recovered_at": timestamp_text,
+            "reason": reason, "old_execution_sha256": old_execution_sha,
+            "old_pre_write_sha256": old_prewrite_sha,
+            "old_execution_status": execution.get("status"),
+            "old_generated_excerpt": execution.get("generated_excerpt"),
+            "current_chinese_title_sha256": current["current_chinese_title_sha256"],
+            "current_chinese_content_sha256": current["current_chinese_content_sha256"],
+            "current_excerpt_sha256": current["current_excerpt_sha256"],
+            "old_generated_excerpt_sha256": current["old_generated_excerpt_sha256"],
+            "current_excerpt_matches_old_generated":
+                current["current_excerpt_matches_old_generated"],
+            "restart_excerpt_state": current["restart_excerpt_state"],
+            "preserved_last_failure": state.get("last_failure"),
+            "preserved_retry_counts": state.get("retry_counts", {}),
+            "safety_checks": current["checks"],
+        }
+        _atomic_write_json(archive / "recovery.json", recovery_snapshot)
+        live = current["live"]
+        fresh_prewrite = backup_record(
+            current["old_manifest"], live, executed_at=timestamp_text,
+            model="glm-4.7", status="prepared")
+        fresh_prewrite["recovery_generation"] = generation
+        _atomic_write_json(prewrite_path, fresh_prewrite)
+        fresh_execution = {
+            "schema_version": 1, "chinese_post_id": int(post_id),
+            "english_post_id": article["english_post_id"], "status": "prepared",
+            "started_at": timestamp_text, "backup_path": str(prewrite_path),
+            "recovery_generation": generation,
+            "restart_excerpt_state": current["restart_excerpt_state"],
+            "expected_pre_run_excerpt_sha256": current["current_excerpt_sha256"],
+        }
+        _atomic_write_json(execution_path, fresh_execution)
+        manifest = dict(current["old_manifest"])
+        manifest.update({
+            "chinese_title": live["chinese_title"],
+            "chinese_content_sha256": live["chinese_content_sha256"],
+            "chinese_excerpt_empty": "True",
+            "english_title_sha256": live["english_title_sha256"],
+            "english_excerpt_sha256": live["english_excerpt_sha256"],
+            "english_content_sha256": live["english_content_sha256"],
+            "execution_status": "pending",
+        })
+        _atomic_write_csv(current["manifest_path"], EXECUTION_MANIFEST_FIELDS, [manifest])
+        previous = state["workflow_status"]
+        prior_counts = dict(state.get("retry_counts") or {})
+        lifetime = dict(state.get("lifetime_retry_counts") or {})
+        for key, value in prior_counts.items():
+            lifetime[key] = int(lifetime.get(key, 0)) + int(value)
+        state.update({
+            "workflow_status": "ready_for_execution", "updated_at": timestamp_text,
+            "recovery_generation": generation, "lifetime_retry_counts": lifetime,
+            "retry_counts": {"run": 0, "resume": 0},
+            "execution_evidence": {
+                "source_file": _relative(execution_path, root),
+                "sha256": _file_sha256(execution_path), "status": "prepared",
+                "recovery_generation": generation,
+            },
+            "source_restart_recovery": {
+                "status": "applied", "generation": generation,
+                "recovered_at": timestamp_text, "reason": reason,
+                "archive": _relative(archive, root),
+                "restart_excerpt_state": current["restart_excerpt_state"],
+                "expected_pre_run_excerpt_sha256": current["current_excerpt_sha256"],
+                "preserved_last_failure": state.get("last_failure"),
+            },
+        })
+        event = _transition_event(
+            "source_changed_execution_restarted", state, previous,
+            "ready_for_execution", reason, recovery_snapshot, timestamp_text,
+            f"restart-current|{generation}|{old_execution_sha}|{old_prewrite_sha}")
+        _persist_transition(root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+        return {**base, "previous_status": previous,
+                "new_status": "ready_for_execution", "changed": True,
+                "writes_performed": True, "recovery_generation": generation,
+                "archive": _relative(archive, root)}
+
+
 SUMMARY_KEYS = (
     "awaiting_manual_conversion", "awaiting_readonly_validation",
     "validation_failed", "ready_for_execution", "execution_in_progress",
@@ -3538,6 +3821,7 @@ def parse_args(argv=None):
         "run-ready", help="preview or execute ready articles in fixed order")
     run.add_argument("--execute", action="store_true")
     run.add_argument("--batch-id")
+    run.add_argument("--post-id", type=int)
     run.add_argument("--json", action="store_true", dest="json_output")
     run.add_argument("--repo-root", type=Path, default=repository_root(),
                      help=argparse.SUPPRESS)
@@ -3563,6 +3847,16 @@ def parse_args(argv=None):
     recovery.add_argument("--apply", action="store_true")
     recovery.add_argument("--json", action="store_true", dest="json_output")
     recovery.add_argument(
+        "--repo-root", type=Path, default=repository_root(),
+        help=argparse.SUPPRESS)
+    restart = subparsers.add_parser(
+        "restart-from-current",
+        help="preview or archive a failed execution and restart from current Chinese source")
+    restart.add_argument("--post-id", required=True, type=int)
+    restart.add_argument("--apply", action="store_true")
+    restart.add_argument("--reason", default="Chinese source edited after failed execution")
+    restart.add_argument("--json", action="store_true", dest="json_output")
+    restart.add_argument(
         "--repo-root", type=Path, default=repository_root(),
         help=argparse.SUPPRESS)
     reconcile = subparsers.add_parser(
@@ -3627,6 +3921,7 @@ def main(argv=None):
                     flush=True)
             result = run_ready(
                 args.repo_root, execute=args.execute, batch_id=args.batch_id,
+                post_id=args.post_id,
                 progress=progress)
             output = render_operation_text(result)
         elif args.command == "resume":
@@ -3640,6 +3935,11 @@ def main(argv=None):
         elif args.command == "recover-blocked":
             result = recover_blocked(
                 args.repo_root, args.post_id, apply=args.apply)
+            output = render_operation_text(result)
+        elif args.command == "restart-from-current":
+            result = restart_from_current(
+                args.repo_root, args.post_id, apply=args.apply,
+                reason=args.reason)
             output = render_operation_text(result)
         else:
             result = reconcile_attempts(

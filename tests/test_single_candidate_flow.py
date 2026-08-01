@@ -7,7 +7,7 @@ import unittest
 
 from src.candidate_execution import ExcerptValidationError, SafetyError
 from src.http_json import HttpJsonError
-from src.single_candidate_flow import SingleCandidateFlow
+from src.single_candidate_flow import SingleCandidateFlow, preflight_live_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +140,69 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(1, state["excerpt_attempts"])
             self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
             self.assertEqual([(1, 1001)] * 3, polylang.calls)
+
+    def prepare_recovery_restart(self, directory, wp, excerpt):
+        wp.posts[1]["excerpt"]["raw"] = excerpt
+        backup_path = Path(directory) / "chinese-1.pre-write.json"
+        backup_path.write_text(json.dumps({
+            "schema_version": 1, "chinese_post_id": 1,
+            "english_post_id": 1001, "status": "prepared",
+            "recovery_generation": 1,
+            "sha256": {"chinese_excerpt": digest(excerpt)},
+        }), encoding="utf-8")
+        state_path = Path(directory) / "chinese-1.execution.json"
+        state_path.write_text(json.dumps({
+            "schema_version": 1, "chinese_post_id": 1,
+            "english_post_id": 1001, "status": "prepared",
+            "backup_path": str(backup_path), "recovery_generation": 1,
+            "restart_excerpt_state": (
+                "known_previous_generated_excerpt" if excerpt else "empty"),
+            "expected_pre_run_excerpt_sha256": digest(excerpt),
+        }), encoding="utf-8")
+
+    def test_recovery_generation_overwrites_known_previous_excerpt_with_new_glm(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_excerpt = "这是上一代生成并已知的中文摘要。" * 6
+            wp = MockWp(); self.prepare_recovery_restart(directory, wp, old_excerpt)
+            glm = MockGlm(); translator = MockTranslator(wp)
+            flow, _, _, _, _ = self.make_flow(directory, wp, glm, translator)
+            result = flow.execute(1)
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(1, glm.calls)
+            self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
+            self.assertNotEqual(old_excerpt, wp.posts[1]["excerpt"]["raw"])
+
+    def test_recovery_generation_fails_if_excerpt_changes_before_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_excerpt = "这是上一代生成并已知的中文摘要。" * 6
+            wp = MockWp(); self.prepare_recovery_restart(directory, wp, old_excerpt)
+            wp.posts[1]["excerpt"]["raw"] = "第三方改写后的摘要"
+            glm = MockGlm(); translator = MockTranslator(wp)
+            flow, _, _, _, _ = self.make_flow(directory, wp, glm, translator)
+            with self.assertRaisesRegex(SafetyError, "no longer matches baseline"):
+                flow.execute(1)
+            self.assertEqual(0, glm.calls)
+            self.assertEqual(0, translator.calls)
+            self.assertEqual([], wp.update_calls)
+
+    def test_regular_run_still_rejects_nonempty_excerpt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wp = MockWp(); wp.posts[1]["excerpt"]["raw"] = "普通非空摘要"
+            glm = MockGlm(); translator = MockTranslator(wp)
+            flow, _, _, _, _ = self.make_flow(directory, wp, glm, translator)
+            with self.assertRaisesRegex(SafetyError, "chinese_excerpt_not_empty"):
+                flow.execute(1)
+            self.assertEqual(0, glm.calls)
+            self.assertEqual(0, translator.calls)
+
+    def test_resume_preflight_reports_observed_nonempty_excerpt(self):
+        wp = MockWp()
+        wp.posts[1]["excerpt"]["raw"] = VALID_EXCERPT
+        result = preflight_live_result(
+            rows()[0], wp, MockPolylang(), CONFIG, resume=True)
+        self.assertTrue(result["preflight_passed"])
+        self.assertFalse(result["chinese_excerpt_empty"])
+        self.assertTrue(result["chinese_excerpt_check_bypassed_for_resume"])
 
     def test_failed_excerpt_save_never_calls_translation(self):
         class BrokenWp(MockWp):

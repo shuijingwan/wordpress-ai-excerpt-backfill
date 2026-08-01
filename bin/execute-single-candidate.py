@@ -26,6 +26,7 @@ def parse_args(argv=None):
     mode.add_argument("--preflight-live", action="store_true")
     mode.add_argument("--execute", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--recovery-restart", action="store_true")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--expected-candidate-count", type=int, default=42)
@@ -33,6 +34,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.resume and not (args.execute or args.preflight_live):
         parser.error("--resume requires --execute or --preflight-live")
+    if args.resume and args.recovery_restart:
+        parser.error("--resume and --recovery-restart are mutually exclusive")
     if args.expected_candidate_count < 1:
         parser.error("--expected-candidate-count must be positive")
     return args
@@ -52,9 +55,19 @@ def main(argv=None):
         from src.single_candidate_flow import preflight_live_result
         from src.wordpress_clients import WordPressRestClient
         config = json.loads((ROOT / "config/classification.json").read_text(encoding="utf-8"))
+        recovery_restart = None
+        if args.recovery_restart:
+            state_path = args.backup_dir / f"chinese-{args.post_id}.execution.json"
+            backup_path = args.backup_dir / f"chinese-{args.post_id}.pre-write.json"
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                backup = json.loads(backup_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise SafetyError(f"invalid recovery restart evidence: {error}") from error
+            recovery_restart = (state, backup)
         result = preflight_live_result(
             row, WordPressRestClient(), PolylangSshChecker(), config,
-            resume=args.resume)
+            resume=args.resume, recovery_restart=recovery_restart)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["preflight_passed"] else 1
     if not args.execute:

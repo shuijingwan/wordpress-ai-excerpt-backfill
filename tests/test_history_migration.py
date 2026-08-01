@@ -274,6 +274,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             "english_content_sha256": "e" * 64,
             "candidate_reason": "test",
             "execution_status": "pending",
+            "expected_code_block_pro_count": "1",
+            "expected_syntaxhighlighter_count": "0",
         })
         MODULE._atomic_write_csv(
             path, MODULE.EXECUTION_MANIFEST_FIELDS, [row])
@@ -1293,7 +1295,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             "integrity_ok": True,
         }
 
-        def fake_run(root, execute, batch_id, progress):
+        def fake_run(root, execute, batch_id, post_id, progress):
+            self.assertIsNone(post_id)
             progress("start", 1, 1, item, None)
             progress("finish", 1, 1, item, completed)
             return result
@@ -1308,6 +1311,42 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(2, len(progress_calls))
         self.assertIn("[1/1] 开始处理", progress_calls[0].args[0])
         self.assertIn("[1/1] 处理完成", progress_calls[1].args[0])
+
+    def test_run_ready_cli_passes_explicit_post_id(self):
+        expected = {
+            "schema_version": 1, "mode": "preview",
+            "repository_root": str(self.root), "selected_count": 0,
+            "allowed_count": 0, "items": [], "writes_performed": False,
+            "integrity_ok": True,
+        }
+        with mock.patch.object(MODULE, "run_ready", return_value=expected) as run:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(MODULE.EXIT_OK, MODULE.main([
+                    "run-ready", "--post-id", "401", "--json",
+                    "--repo-root", str(self.root)]))
+        run.assert_called_once_with(
+            self.root, execute=False, batch_id=None, post_id=401,
+            progress=None)
+
+    def test_run_ready_post_id_filters_without_changing_batch_mode(self):
+        self.prepare_converted()
+        MODULE.mark_converted(self.root, 402, 1, 1, True)
+        for post_id in (401, 402):
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            MODULE.record_validation(
+                self.root, post_id, str(path.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+        batch = MODULE.run_ready(self.root)
+        selected = MODULE.run_ready(self.root, post_id=402)
+        missing = MODULE.run_ready(self.root, post_id=499)
+        self.assertEqual(2, batch["selected_count"])
+        self.assertEqual([401, 402], [item["post_id"] for item in batch["items"]])
+        self.assertEqual(1, selected["selected_count"])
+        self.assertEqual(402, selected["items"][0]["post_id"])
+        self.assertEqual(0, missing["selected_count"])
+        self.assertEqual([], missing["items"])
 
     def test_run_ready_whole_article_retry_run_then_success(self):
         self.prepare_converted()
@@ -2183,6 +2222,161 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 "--repo-root", str(self.root)])
         self.assertEqual(MODULE.EXIT_OK, code)
         self.assertTrue(json.loads(output.getvalue())["eligible"])
+
+    def restart_source(self, *, english_title="English", excerpt=""):
+        from src.candidate_execution import sha256_text
+        content = (
+            '<!-- wp:kevinbatdorf/code-block-pro -->'
+            '<div class="wp-block-kevinbatdorf-code-block-pro"><textarea>x</textarea>'
+            '<pre class="shiki"><code><span class="line">changed code</span>'
+            '</code></pre></div>'
+            '<!-- /wp:kevinbatdorf/code-block-pro -->')
+
+        class Source:
+            def get_post(self, post_id):
+                if int(post_id) == 401:
+                    return {"id": 401, "status": "publish",
+                            "title": {"raw": "人工修复标题"},
+                            "excerpt": {"raw": excerpt},
+                            "content": {"raw": content}}
+                return {"id": 1401, "status": "publish",
+                        "title": {"raw": english_title},
+                        "excerpt": {"raw": ""},
+                        "content": {"raw": "English body"}}
+
+            def check(self, chinese, english):
+                return {"chinese_post_id": 401, "chinese_language": "zh",
+                        "linked_english_post_id": 1401,
+                        "english_post_id": 1401, "english_language": "en",
+                        "linked_chinese_post_id": 401}
+
+        return Source(), content, sha256_text
+
+    def prepare_source_restart(self, excerpt=""):
+        state_path = self.prepare_blocked_run()
+        (self.root / "config/classification.json").write_bytes(
+            (ROOT / "config/classification.json").read_bytes())
+        execution_path = self.write_execution(401, 1401, "translation_failed")
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution.update({"generated_excerpt": "旧摘要", "error": "title failed"})
+        MODULE._atomic_write_json(execution_path, execution)
+        source, content, sha256_text = self.restart_source(excerpt=excerpt)
+        prewrite = {
+            "schema_version": 1, "chinese_post_id": 401,
+            "english_post_id": 1401, "status": "prepared",
+            "before": {"chinese_excerpt": "", "english_title": "English",
+                       "english_excerpt": "", "english_content": "English body"},
+            "sha256": {"chinese_title": sha256_text("标题 401"),
+                       "chinese_content": "b" * 64,
+                       "chinese_excerpt": sha256_text(""),
+                       "english_title": sha256_text("English"),
+                       "english_excerpt": sha256_text(""),
+                       "english_content": sha256_text("English body")},
+        }
+        MODULE._atomic_write_json(MODULE._prewrite_path(self.root, 401), prewrite)
+        return state_path, source, content
+
+    def test_restart_from_current_preview_is_read_only(self):
+        _, source, _ = self.prepare_source_restart()
+        before = self.snapshot()
+        result = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(result["eligible"], result["blocking_reasons"])
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_restart_from_current_accepts_exact_old_generated_excerpt(self):
+        _, source, _ = self.prepare_source_restart(excerpt="旧摘要")
+        before = self.snapshot()
+        preview = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(preview["eligible"], preview["blocking_reasons"])
+        self.assertEqual(before, self.snapshot())
+        applied = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        audit = json.loads((self.root / applied["archive"] / "recovery.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual("known_previous_generated_excerpt",
+                         audit["restart_excerpt_state"])
+        self.assertTrue(audit["current_excerpt_matches_old_generated"])
+        self.assertEqual(audit["current_excerpt_sha256"],
+                         audit["old_generated_excerpt_sha256"])
+
+    def test_restart_from_current_rejects_unknown_nonempty_excerpt(self):
+        _, source, _ = self.prepare_source_restart(excerpt="人工写入的其他摘要")
+        before = self.snapshot()
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("chinese_excerpt_known_for_restart",
+                      result["blocking_reasons"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_restart_from_current_apply_archives_and_rebaselines_only_post(self):
+        state_path, source, content = self.prepare_source_restart()
+        old_execution_sha = MODULE._file_sha256(
+            MODULE._execution_path(self.root, 401))
+        old_prewrite_sha = MODULE._file_sha256(
+            MODULE._prewrite_path(self.root, 401))
+        other_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402)
+        other_before = other_path.read_bytes()
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source,
+            reason="operator edited Chinese source")
+        self.assertTrue(result["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        execution = json.loads(MODULE._execution_path(
+            self.root, 401).read_text(encoding="utf-8"))
+        backup = json.loads(MODULE._prewrite_path(
+            self.root, 401).read_text(encoding="utf-8"))
+        archive = self.root / result["archive"]
+        audit = json.loads((archive / "recovery.json").read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual("prepared", execution["status"])
+        self.assertNotIn("generated_excerpt", execution)
+        self.assertEqual(backup["sha256"]["chinese_content"],
+                         audit["current_chinese_content_sha256"])
+        self.assertEqual("translation_failed", audit["old_execution_status"])
+        self.assertEqual("旧摘要", audit["old_generated_excerpt"])
+        self.assertTrue((archive / "chinese-401.execution.json").is_file())
+        self.assertTrue((archive / "chinese-401.pre-write.json").is_file())
+        self.assertEqual(old_execution_sha, MODULE._file_sha256(
+            archive / "chinese-401.execution.json"))
+        self.assertEqual(old_prewrite_sha, MODULE._file_sha256(
+            archive / "chinese-401.pre-write.json"))
+        self.assertEqual(other_before, other_path.read_bytes())
+        run_plan = MODULE._run_items(self.root)[1]
+        item = next(value for value in run_plan if value["post_id"] == 401)
+        self.assertTrue(item["allowed"], item["blocking_reasons"])
+        self.assertIn("--recovery-restart", MODULE._executor_command(
+            self.root, state, preflight=True))
+
+    def test_restart_from_current_fails_closed_on_english_drift(self):
+        _, _, _ = self.prepare_source_restart()
+        drifted, _, _ = self.restart_source(english_title="partially translated")
+        before = self.snapshot()
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: drifted)
+        self.assertFalse(result["eligible"])
+        self.assertIn("english_title_unchanged", result["blocking_reasons"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_restart_from_current_rejects_completed_and_missing_evidence(self):
+        state_path, source, _ = self.prepare_source_restart()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        self.assertFalse(MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)["eligible"])
+        state["workflow_status"] = "blocked"
+        MODULE._atomic_write_json(state_path, state)
+        MODULE._prewrite_path(self.root, 401).unlink()
+        result = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("both execution and pre-write evidence are required",
+                      result["blocking_reasons"])
 
 
 if __name__ == "__main__":

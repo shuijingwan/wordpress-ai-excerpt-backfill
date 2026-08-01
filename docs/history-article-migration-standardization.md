@@ -222,7 +222,45 @@ JSONL 追加本身不是跨进程安全事务，因此写事件和状态时必�
 
 ## 8. 单篇失败隔离、重试和 resume
 
-### 8.1 隔离规则
+### 8.1 translation_failed 后中文源发生人工修改
+
+普通 `resume` 的前提是中文标题、正文以及已保存摘要仍与失败 execution 一致。若只是临时翻译
+故障且中文源未修改，仍走 `resume --post-id ID --execute`，原行为不变。若操作员在失败后修改了
+中文标题或正文，则不得删除 evidence、修改 SHA 或直接改 coordination JSON，也不得继续复用旧
+`generated_excerpt`。
+
+使用独立的单篇恢复入口：
+
+```bash
+python3 bin/history-migration.py restart-from-current --post-id ID
+python3 bin/history-migration.py restart-from-current --post-id ID --apply
+```
+
+第一条是默认 preview，不写本地状态；第二条才执行恢复。apply 会再次读取生产，核对固定中英文
+ID、publish 状态、Polylang 双向关系、Gutenberg、SyntaxHighlighter=0、预期 Code Block Pro 数量、
+中文摘要状态和 phase1 eligibility。中文摘要必须为空，或逐字等于旧 execution 中非空的
+`generated_excerpt`；其他非空值一律拒绝。英文 title/excerpt/content 必须与旧 pre-write 的写前哈希完全一致；
+任何无法识别的部分写入都会 fail closed，且不修改状态。
+
+恢复会把旧 execution 和 pre-write 原样保存到
+`data/backups/single-candidate/recovery-history/chinese-ID/<timestamp>/`，另存包含旧文件 SHA-256、
+旧状态和摘要、当前中文 title/content SHA-256、新旧摘要 SHA-256、逐字匹配结论、摘要状态、原因、
+时间、旧失败和重试计数的 `recovery.json`。
+随后创建带 recovery generation 的新 `prepared` execution/pre-write，以当前中文标题、正文更新该篇
+execution manifest，并把 workflow 置为 `ready_for_execution`。旧计数累计进入
+`lifetime_retry_counts`，新 generation 的 run/resume 计数独立开始；其他文章和固定 batch ID 不变。
+若恢复时保留的是已知旧摘要，协调器会给执行器传递 recovery restart 标记；执行器再次 GET 后必须
+确认摘要仍匹配新 pre-write 的哈希，随后使用当前中文标题和正文重新调用 GLM 并覆盖它。普通 run
+仍要求空摘要，旧 `generated_excerpt` 不作为生成或 resume 输入。
+接着只运行该批次中的目标篇，完成后检查状态：
+
+```bash
+python3 bin/history-migration.py run-ready --batch-id BATCH --post-id ID --execute
+python3 bin/history-migration.py status --json
+python3 bin/history-migration.py summary --json
+```
+
+### 8.2 隔离规则
 
 - 批次 runner 始终按固定 CSV 顺序逐篇处理，每篇外层单独捕获异常。
 - 一篇失败写入事件和协调状态后立即处理下一篇，进程级配置错误除外。
@@ -230,7 +268,7 @@ JSONL 追加本身不是跨进程安全事务，因此写事件和状态时必�
   但不得改变尚未处理文章的状态。
 - 最终始终输出 `completed`、`failed`、`pending`、`blocked` 数量及 ID。
 
-### 8.2 有限重试
+### 8.3 有限重试
 
 - 保留现有摘要内容校验“一次执行最多 3 次”的内部规则，不在协调器里复制。
 - 协调器的**运行级自动重试建议上限为每阶段 2 次**（首次运行加 1 次自动重试）。
@@ -241,7 +279,7 @@ JSONL 追加本身不是跨进程安全事务，因此写事件和状态时必�
 - 每次尝试记录 `stage`、`attempt`、开始/结束时间、错误类型、脱敏原因和结果；达到上限转 `blocked`。
 - 禁止递归和无限循环；批次 resume 也不能重置累计次数。
 
-### 8.3 Resume 语义
+### 8.4 Resume 语义
 
 - `resume` 只选择协调状态为等待类、`excerpt_failed`、`ready_for_translation_resume` 或
   `translation_failed` 的文章；默认跳过 `paused`，拒绝 `completed` 和 `blocked`。

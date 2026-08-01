@@ -13,7 +13,7 @@ from src.candidate_execution import SafetyError
 from src.polylang_ssh import PolylangSshChecker
 from src.single_candidate_flow import preflight_live_result, validate_polylang
 from src.wordpress_clients import WordPressRestClient
-from tests.test_single_candidate_flow import CONFIG, CONTENT, MockWp, rows
+from tests.test_single_candidate_flow import CONFIG, CONTENT, MockWp, digest, rows
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,69 @@ class Polylang:
 
 
 class PreflightLiveTest(unittest.TestCase):
+    def write_manifest(self, directory):
+        manifest_rows = rows()[:1]
+        path = Path(directory) / "manifest.csv"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=manifest_rows[0].keys())
+            writer.writeheader(); writer.writerows(manifest_rows)
+        return path
+
+    def test_recovery_restart_and_resume_are_mutually_exclusive(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            CLI.parse_args([
+                "--post-id", "1", "--preflight-live", "--resume",
+                "--recovery-restart"])
+
+    def test_recovery_restart_missing_evidence_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = self.write_manifest(directory)
+            with self.assertRaisesRegex(SafetyError, "invalid recovery restart evidence"):
+                CLI.main([
+                    "--post-id", "1", "--preflight-live", "--recovery-restart",
+                    "--manifest", str(manifest), "--expected-candidate-count", "1",
+                    "--backup-dir", str(Path(directory) / "missing")])
+
+    def test_recovery_restart_preflight_loads_matching_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = self.write_manifest(directory)
+            backup_dir = Path(directory) / "backups"; backup_dir.mkdir()
+            excerpt = "上一代已知摘要"
+            state = {
+                "schema_version": 1, "chinese_post_id": 1,
+                "english_post_id": 1001, "status": "prepared",
+                "recovery_generation": 2,
+                "restart_excerpt_state": "known_previous_generated_excerpt",
+                "expected_pre_run_excerpt_sha256": digest(excerpt),
+            }
+            backup = {
+                "schema_version": 1, "chinese_post_id": 1,
+                "english_post_id": 1001, "recovery_generation": 2,
+                "sha256": {"chinese_excerpt": digest(excerpt)},
+            }
+            (backup_dir / "chinese-1.execution.json").write_text(
+                json.dumps(state), encoding="utf-8")
+            (backup_dir / "chinese-1.pre-write.json").write_text(
+                json.dumps(backup), encoding="utf-8")
+            wp = MockWp(); wp.posts[1]["excerpt"]["raw"] = excerpt
+            output = io.StringIO()
+            with mock.patch(
+                    "src.wordpress_clients.WordPressRestClient", return_value=wp), \
+                    mock.patch(
+                        "src.polylang_ssh.PolylangSshChecker",
+                        return_value=Polylang()), \
+                    contextlib.redirect_stdout(output):
+                code = CLI.main([
+                    "--post-id", "1", "--preflight-live", "--recovery-restart",
+                    "--manifest", str(manifest), "--expected-candidate-count", "1",
+                    "--backup-dir", str(backup_dir)])
+            result = json.loads(output.getvalue())
+            self.assertEqual(0, code)
+            self.assertTrue(result["preflight_passed"])
+            self.assertFalse(result["chinese_excerpt_empty"])
+            self.assertTrue(
+                result["chinese_excerpt_authorized_by_recovery_restart"])
+
     def test_cli_accepts_isolated_single_manifest_with_explicit_count(self):
         manifest_rows = rows()[:1]
         with tempfile.TemporaryDirectory() as directory:

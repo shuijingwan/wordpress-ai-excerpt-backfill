@@ -116,6 +116,26 @@ PYTHONDONTWRITEBYTECODE=1 \
 python3 -m unittest discover -s tests -v
 ```
 
+## 失败执行后中文源被人工修改
+
+`translation_failed` 后应先区分两种情况：
+
+- 中文标题和正文未修改，只是临时翻译失败：继续使用
+  `python3 bin/history-migration.py resume --post-id ID --execute`。
+- 为修复问题人工修改了中文标题或正文：禁止直接 resume。先运行
+  `restart-from-current --post-id ID` 预览；确认所有生产只读安全检查通过后，加
+  `--apply` 归档旧 execution/pre-write、建立当前生产版本的新基线；然后仅对该篇运行
+  `run-ready --batch-id BATCH --post-id ID --execute`，最后用 `status` 和 `summary` 验证收敛。
+
+`restart-from-current` 默认只读。它要求旧 execution 为 `translation_failed` 且 pre-write
+同时存在；当前中文摘要可以为空，也可以逐字等于旧 execution 的非空 `generated_excerpt`，其他
+非空摘要一律拒绝。文章结构和 Polylang 关系仍须合格，并要求英文 title/excerpt/content
+与旧写前备份完全一致。旧摘要、失败、文件 SHA-256 和重试计数会进入按时间戳保存的 recovery
+审计目录，其中记录新旧摘要 SHA-256、匹配结果和摘要状态。新 generation 的运行计数从零开始，
+旧计数累计保留在 `lifetime_retry_counts`。只有该 recovery generation 的正式 run 可以覆盖已知旧
+摘要；它仍会用当前标题和正文重新调用 GLM，绝不复用旧 `generated_excerpt`。run 前摘要若发生变化
+会 fail closed。普通 fresh run 仍要求空摘要。
+
 ## Mixed SyntaxHighlighter 固定批次构建
 
 `bin/build-mixed-syntaxhighlighter-batch.py` 用于从本地 Mixed preview、只读 WordPress raw JSONL

@@ -19,6 +19,26 @@ def raw_field(post, name):
     return value if isinstance(value, str) else ""
 
 
+def validate_recovery_restart_excerpt(state, backup, chinese_id, english_id,
+                                      current_excerpt):
+    """Authorize only the exact excerpt captured by a restart generation."""
+    restart_state = state.get("restart_excerpt_state")
+    expected_sha = state.get("expected_pre_run_excerpt_sha256")
+    if (restart_state not in {"empty", "known_previous_generated_excerpt"}
+            or not isinstance(expected_sha, str) or len(expected_sha) != 64
+            or state.get("status") != "prepared"
+            or state.get("chinese_post_id") != int(chinese_id)
+            or state.get("english_post_id") != int(english_id)
+            or backup.get("recovery_generation") != state.get("recovery_generation")
+            or (backup.get("sha256") or {}).get("chinese_excerpt") != expected_sha
+            or sha256_text(current_excerpt) != expected_sha
+            or (restart_state == "empty" and current_excerpt.strip())
+            or (restart_state == "known_previous_generated_excerpt"
+                and not current_excerpt.strip())):
+        raise SafetyError("recovery restart Chinese excerpt no longer matches baseline")
+    return True
+
+
 def validate_polylang(row, result):
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     expected = {
@@ -88,7 +108,8 @@ def reconcile_translation_started(row, chinese, english):
     return bool(raw_field(english, "excerpt").strip())
 
 
-def preflight_live_result(row, wp, polylang_checker, config, resume=False):
+def preflight_live_result(row, wp, polylang_checker, config, resume=False,
+                          recovery_restart=None):
     """Perform exactly two GETs and return metadata/hashes only, never post text."""
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     chinese = wp.get_post(zh_id)
@@ -169,6 +190,11 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False):
                 "english_excerpt_sha256_matches",
                 "english_content_sha256_matches"):
             checks[name] = True
+    if recovery_restart is not None:
+        state, backup = recovery_restart
+        validate_recovery_restart_excerpt(
+            state, backup, zh_id, en_id, zh_excerpt)
+        checks["chinese_excerpt_empty"] = True
     return {
         "mode": "preflight-live", "chinese_post_id": zh_id, "english_post_id": en_id,
         "returned_ids": {"chinese_correct": chinese.get("id") == zh_id,
@@ -183,7 +209,12 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False):
             "english_language": polylang["english_language"],
             "linked_chinese_post_id": polylang["linked_chinese_post_id"],
         } if polylang else {"error": polylang_error}),
-        "chinese_excerpt_empty": checks["chinese_excerpt_empty"],
+        # Report the observed REST value. Resume permits a non-empty saved
+        # excerpt for validation, but must not rewrite the observation itself.
+        "chinese_excerpt_empty": not zh_excerpt.strip(),
+        "chinese_excerpt_check_bypassed_for_resume": bool(resume),
+        "chinese_excerpt_authorized_by_recovery_restart":
+            recovery_restart is not None,
         "chinese_title_matches": checks["chinese_title_matches"],
         "english_excerpt_empty": not en_excerpt.strip(),
         "sha256_matches": {
@@ -267,6 +298,18 @@ class SingleCandidateFlow:
             if failures:
                 raise SafetyError("resume live validation failed: " + ",".join(failures))
         else:
+            prior = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
+            if prior is not None and prior.get("recovery_generation") is not None:
+                current_excerpt = raw_field(chinese, "excerpt")
+                recovery_backup_path = self.backup_dir / f"chinese-{zh_id}.pre-write.json"
+                recovery_backup = (
+                    json.loads(recovery_backup_path.read_text(encoding="utf-8"))
+                    if recovery_backup_path.is_file() else {})
+                validate_recovery_restart_excerpt(
+                    prior, recovery_backup, zh_id, en_id, current_excerpt)
+                # Only an explicitly prepared recovery generation may treat its
+                # exact pre-run excerpt as an allowed value for a new GLM run.
+                live["chinese_excerpt_empty"] = True
             failures = validate_live(row, live)
             if failures:
                 raise SafetyError("live validation failed: " + ",".join(failures))
@@ -274,7 +317,6 @@ class SingleCandidateFlow:
                 raise SafetyError("GLM client is required for non-resume execution")
             now = datetime.now(timezone.utc).isoformat()
             backup_path = self.backup_dir / f"chinese-{zh_id}.pre-write.json"
-            prior = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
             if prior is not None:
                 if (prior.get("status") not in {
                             "prepared", "excerpt_rejected", "excerpt_generated"}
@@ -287,6 +329,13 @@ class SingleCandidateFlow:
                 backup_path = write_backup(self.backup_dir, record)
             state = {"schema_version": 1, "chinese_post_id": zh_id, "english_post_id": en_id,
                      "backup_path": str(backup_path), "started_at": now, "status": "prepared"}
+            if prior is not None and prior.get("recovery_generation") is not None:
+                state.update({
+                    "recovery_generation": prior["recovery_generation"],
+                    "restart_excerpt_state": prior["restart_excerpt_state"],
+                    "expected_pre_run_excerpt_sha256":
+                        prior["expected_pre_run_excerpt_sha256"],
+                })
             self._save_state(state, "prepared")
             cleaned_content = extract_excerpt_source(live["chinese_content"])
             rejected_paths = []
