@@ -90,7 +90,7 @@ MIXED_SYNTAX_FIXED_FIELDS = (
     - {"before_content_sha256"}
     | {
         "source_editor_format", "target_editor_format",
-        "source_migration_type", "content_sha256",
+        "source_migration_type", "source_type", "content_sha256",
         "snapshot_id", "snapshot_generated_at",
     }
 )
@@ -213,6 +213,7 @@ def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
         raise ReadError(f"{path}: fixed batch is empty")
     if source_type == "mixed_syntaxhighlighter_daily":
         expected_values = {
+            "source_type": "mixed_syntaxhighlighter_daily",
             "source_editor_format": "mixed",
             "target_editor_format": "gutenberg",
             "source_migration_type": MIXED_SOURCE_MIGRATION_TYPE,

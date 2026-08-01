@@ -27,7 +27,7 @@ MIXED_FIELDS = [
     field for field in SYNTAX_FIELDS if field != "before_content_sha256"
 ] + [
     "batch_expected_count", "source_editor_format", "target_editor_format",
-    "source_migration_type", "content_sha256", "snapshot_id",
+    "source_migration_type", "source_type", "content_sha256", "snapshot_id",
     "snapshot_generated_at", "expected_code_block_pro_count_after",
 ]
 MANIFEST_FIELDS = [
@@ -128,6 +128,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             "validation_status": "not-checked",
             "source_editor_format": "mixed",
             "target_editor_format": "gutenberg",
+            "source_type": "mixed_syntaxhighlighter_daily",
             "source_migration_type":
                 "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
             "content_sha256": "f" * 64,

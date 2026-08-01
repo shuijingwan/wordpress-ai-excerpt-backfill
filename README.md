@@ -116,6 +116,36 @@ PYTHONDONTWRITEBYTECODE=1 \
 python3 -m unittest discover -s tests -v
 ```
 
+## Mixed SyntaxHighlighter 固定批次构建
+
+`bin/build-mixed-syntaxhighlighter-batch.py` 用于从本地 Mixed preview、只读 WordPress raw JSONL
+快照和 Polylang translation JSONL 构建不可覆盖的固定 CSV。它不会访问或写入 WordPress。构建器会
+重新分析 raw 正文，并要求 preview 与 raw 的文章 ID、正文 SHA-256、标题、发布时间、永久链接和结构
+计数完全一致；任何漂移都会 fail closed。
+
+输出文件和 batch ID 必须遵循：
+
+```text
+batch ID: mixed-syntaxhighlighter-YYYYMMDD-NN
+文件名:   mixed-syntaxhighlighter-migration-batch-YYYYMMDD-NN.csv
+```
+
+候选按 `published_at DESC`、`chinese_post_id DESC` 排序，每批最多 20 篇；最后不足 20 篇时允许生成
+final partial batch。输出固定记录 `source_type=mixed_syntaxhighlighter_daily`，并排除已进入历史批次、
+已完成的中英文文章。文章 `2710`、`4984`、`5152`、`5520`、`12389` 来自历史分析，仍同时包含其他
+代码格式或结构异常，因此暂不进入普通 Mixed 每日批次，后续必须单独人工处理。
+
+命令需要显式提供 preview、translation snapshot、输出、batch ID 和一个或多个 raw JSONL：
+
+```bash
+python3 bin/build-mixed-syntaxhighlighter-batch.py \
+  --preview data/analysis/MIXED_PREVIEW.csv \
+  --translations data/raw/TRANSLATIONS.jsonl \
+  --output data/analysis/mixed-syntaxhighlighter-migration-batch-YYYYMMDD-NN.csv \
+  --batch-id mixed-syntaxhighlighter-YYYYMMDD-NN \
+  data/raw/WORDPRESS_PART_1.jsonl [data/raw/WORDPRESS_PART_2.jsonl ...]
+```
+
 在不连接生产环境的情况下检查部署计划：
 
 ```bash
