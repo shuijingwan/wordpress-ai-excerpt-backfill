@@ -1,0 +1,82 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260730-01",
+  "batch_position": 19,
+  "blocked_reasons": [],
+  "chinese_post_id": 9104,
+  "english_post_id": 11496,
+  "execution_evidence": {
+    "sha256": "8204e68ab69b9ce91c6c8bdbd923ceb1b9e173a4ad190f5d602d1ce427d5a890",
+    "source_file": "data/backups/single-candidate/chinese-9104.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-07-30T03:35:25.339941+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-30T03:06:50.265789+00:00",
+  "language_review": {
+    "confirmed_at": "2026-07-30T03:35:25.339941+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "occurred_at": "2026-07-30T04:05:19.305607+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 45, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 297, in _read_status\n    line = str(self.fp.readline(_MAXLINE + 1), \"iso-8859-1\")\n               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/socket.py\", line 725, in readinto\n    return self._sock.recv_into(b)\n           ~~~~~~~~~~~~~~~~~~~~^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1304, in recv_into\n    return self.read(nbytes, buffer)\n           ~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1138, in read\n    return self._sslobj.read(len, buffer)\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^\nTimeoutError: The read operation timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 97, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 89, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 296, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 56, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 50, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: TimeoutError\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 4,
+    "confirmed_at": "2026-07-30T03:35:25.339941+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 4
+  },
+  "recovery": {
+    "action": "restart",
+    "execution_sha256": "69e2afa64553dfe680d33800edf1801f3d01d8bb19227d9636c82898318cc0a6",
+    "execution_status": "prepared",
+    "recovered_at": "2026-07-30T04:05:24.393464+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260730-01.csv",
+  "source_batch_sha256": "c6f068417a66b93b0080080d6f936bdc56c0ef1d5b455f24ad1fe5c15d463ad3",
+  "source_row_sha256": "18fac2e4c403be3a76aafc81f5ad2edffa37e8592505e60f4811406c338f973b",
+  "updated_at": "2026-07-30T04:06:15.796739+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "52bc350f5c61bb76c783ae0784a9f75eb3252d2bc215782542e8326fbd847349",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "934d8fd11130331528083a3161a2bb8970858ae5c38156cf4b64c160a211d13d",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260730-01/chinese-9104.csv",
+    "status": "ready",
+    "validated_at": "2026-07-30T03:42:02.713038+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

@@ -1,0 +1,106 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260731-01",
+  "batch_position": 14,
+  "blocked_reasons": [],
+  "chinese_post_id": 8819,
+  "english_post_id": 11798,
+  "execution_evidence": {
+    "sha256": "969d0eb3de14c3cc77710150272876c7bf44e6fb4f69e2ba7bc9f4ae9f7a49e6",
+    "source_file": "data/backups/single-candidate/chinese-8819.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-07-31T14:30:36.221422+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-07-31T14:01:19.791308+00:00",
+  "language_review": {
+    "confirmed_at": "2026-07-31T14:30:36.221422+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 3,
+    "occurred_at": "2026-07-31T15:08:12.350911+00:00",
+    "reason": "preflight_failed",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "",
+    "stdout_summary": "{\n  \"chinese_excerpt_empty\": true,\n  \"chinese_language_field\": null,\n  \"chinese_post_id\": 8819,\n  \"chinese_raw_fields_present\": {\n    \"content.raw\": true,\n    \"excerpt.raw\": true,\n    \"title.raw\": true\n  },\n  \"chinese_response_fields\": [\n    \"_links\",\n    \"author\",\n    \"categories\",\n    \"class_list\",\n    \"comment_status\",\n    \"content\",\n    \"date\",\n    \"date_gmt\",\n    \"excerpt\",\n    \"featured_media\",\n    \"format\",\n    \"generated_slug\",\n    \"guid\",\n    \"id\",\n    \"link\",\n    \"meta\",\n    \"modified\",\n    \"modified_gmt\",\n    \"password\",\n    \"permalink_template\",\n    \"ping_status\",\n    \"series\",\n    \"slug\",\n    \"status\",\n    \"sticky\",\n    \"tags\",\n    \"template\",\n    \"title\",\n    \"type\",\n    \"yoast_head\",\n    \"yoast_head_json\"\n  ],\n  \"chinese_title_matches\": false,\n  \"english_excerpt_empty\": true,\n  \"english_post_id\": 11798,\n  \"mode\": \"preflight-live\",\n  \"polylang_check\": {\n    \"chinese_language\": \"zh\",\n    \"english_language\": \"en\",\n    \"linked_chinese_post_id\": 8819,\n    \"linked_english_post_id\": 11798\n  },\n  \"polylang_relation_field\": null,\n  \"preflight_passed\": false,\n  \"request_counts\": {\n    \"glm\": 0,\n    \"post\": 0,\n    \"ssh_readonly\": 1,\n    \"translation\": 0,\n    \"wordpress_get\": 2\n  },\n  \"returned_ids\": {\n    \"chinese_correct\": true,\n    \"english_correct\": true\n  },\n  \"sha256_matches\": {\n    \"chinese_content\": false,\n    \"english_content\": true,\n    \"english_excerpt\": true,\n    \"english_title\": true\n  },\n  \"statuses\": {\n    \"chinese\": \"publish\",\n    \"english\": \"publish\"\n  },\n  \"structure\": {\n    \"code_block_pro\": true,\n    \"code_block_pro_count\": 3,\n    \"expected_code_block_pro_count_matches\": true,\n    \"expected_syntaxhighlighter_count_matches\": true,\n    \"gutenberg\": true,\n    \"phase1_eligible\": true,\n    \"syntaxhighlighter_count\": 0\n  }\n}\n"
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "resume": 3,
+    "run": 1
+  },
+  "manual_conversion": {
+    "cbp_count_after": 3,
+    "confirmed_at": "2026-07-31T14:30:36.221422+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 3
+  },
+  "recovery": {
+    "action": "restart",
+    "execution_sha256": "cbd6ca57907ff9b6681aedc423a966099bde946582a08ff3c9acc10e729faf76",
+    "execution_status": "prepared",
+    "recovered_at": "2026-07-31T16:06:59.799930+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 0,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260731-01.csv",
+  "source_batch_sha256": "c74f680132599cf489193bbdfefed619873db5b6d4070cf24328866000ea11c4",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-8819/20260731T160619.835460Z",
+    "expected_pre_run_excerpt_sha256": "f1720780edc5538582eb95f2f01d9ffa185df51ca85847ab2afc880c94dc956c",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 3,
+      "occurred_at": "2026-07-31T15:08:12.350911+00:00",
+      "reason": "preflight_failed",
+      "returncode": 1,
+      "stage": "resume",
+      "stderr_summary": "",
+      "stdout_summary": "{\n  \"chinese_excerpt_empty\": true,\n  \"chinese_language_field\": null,\n  \"chinese_post_id\": 8819,\n  \"chinese_raw_fields_present\": {\n    \"content.raw\": true,\n    \"excerpt.raw\": true,\n    \"title.raw\": true\n  },\n  \"chinese_response_fields\": [\n    \"_links\",\n    \"author\",\n    \"categories\",\n    \"class_list\",\n    \"comment_status\",\n    \"content\",\n    \"date\",\n    \"date_gmt\",\n    \"excerpt\",\n    \"featured_media\",\n    \"format\",\n    \"generated_slug\",\n    \"guid\",\n    \"id\",\n    \"link\",\n    \"meta\",\n    \"modified\",\n    \"modified_gmt\",\n    \"password\",\n    \"permalink_template\",\n    \"ping_status\",\n    \"series\",\n    \"slug\",\n    \"status\",\n    \"sticky\",\n    \"tags\",\n    \"template\",\n    \"title\",\n    \"type\",\n    \"yoast_head\",\n    \"yoast_head_json\"\n  ],\n  \"chinese_title_matches\": false,\n  \"english_excerpt_empty\": true,\n  \"english_post_id\": 11798,\n  \"mode\": \"preflight-live\",\n  \"polylang_check\": {\n    \"chinese_language\": \"zh\",\n    \"english_language\": \"en\",\n    \"linked_chinese_post_id\": 8819,\n    \"linked_english_post_id\": 11798\n  },\n  \"polylang_relation_field\": null,\n  \"preflight_passed\": false,\n  \"request_counts\": {\n    \"glm\": 0,\n    \"post\": 0,\n    \"ssh_readonly\": 1,\n    \"translation\": 0,\n    \"wordpress_get\": 2\n  },\n  \"returned_ids\": {\n    \"chinese_correct\": true,\n    \"english_correct\": true\n  },\n  \"sha256_matches\": {\n    \"chinese_content\": false,\n    \"english_content\": true,\n    \"english_excerpt\": true,\n    \"english_title\": true\n  },\n  \"statuses\": {\n    \"chinese\": \"publish\",\n    \"english\": \"publish\"\n  },\n  \"structure\": {\n    \"code_block_pro\": true,\n    \"code_block_pro_count\": 3,\n    \"expected_code_block_pro_count_matches\": true,\n    \"expected_syntaxhighlighter_count_matches\": true,\n    \"gutenberg\": true,\n    \"phase1_eligible\": true,\n    \"syntaxhighlighter_count\": 0\n  }\n}\n"
+    },
+    "reason": "translation_failed 后人工修改中文标题和正文；当前摘要确认等于旧 generated_excerpt，从当前生产版本重新生成",
+    "recovered_at": "2026-07-31T16:06:19.835460+00:00",
+    "restart_excerpt_state": "known_previous_generated_excerpt",
+    "status": "applied"
+  },
+  "source_row_sha256": "db824eae5d882513137322cbd7f8d5e712593f84c26428e3ce9aea30894db697",
+  "updated_at": "2026-07-31T16:08:11.329791+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "e04e092ef9aa18190e54da4acd2fc32c3eee5b9928e10e689ee4176d73981494",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "dcdc1a4b039f9ef5e39c34f8931c31d5374a2010a04ba8a6840369ceecbca40b",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260731-01/chinese-8819.csv",
+    "status": "ready",
+    "validated_at": "2026-07-31T14:34:27.546073+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
