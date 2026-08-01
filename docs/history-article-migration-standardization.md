@@ -260,7 +260,34 @@ python3 bin/history-migration.py status --json
 python3 bin/history-migration.py summary --json
 ```
 
-### 8.2 隔离规则
+### 8.2 excerpt_rejected 后安全重新生成
+
+`excerpt_rejected` 表示 GLM 已返回内容但纯文本安全验证未通过，不等同于网络超时，不能使用只继续
+翻译阶段的普通 `resume`。对于验证器规则修正后确认可重新生成的文章，继续使用唯一恢复入口：
+
+```bash
+python3 bin/history-migration.py restart-from-current --post-id ID --json
+python3 bin/history-migration.py restart-from-current --post-id ID --apply
+python3 bin/history-migration.py run-ready --batch-id BATCH --post-id ID --execute
+```
+
+preview 和 apply 都会执行生产只读核对；只有 apply 修改本地 coordination/evidence，只有最后显式
+`--execute` 的单篇 run 才允许写生产。该分支只接受 `workflow_status=excerpt_failed`、
+`execution_status=excerpt_rejected`，并要求中文摘要为空、中文 title/content 与 pre-write 基线一致、
+英文 title/excerpt/content 未变化，以及现有 ID、publish、Polylang、Gutenberg、SyntaxHighlighter、
+Code Block Pro 和 phase1 检查全部通过。任何其他失败原因或漂移均 fail closed。
+
+execution 中必须列出至少一份 rejected 摘要，且每份文件必须仍位于受控 rejected evidence 目录。
+apply 按 SHA-256 归档旧 execution、pre-write 和全部 rejected 文本，记录
+`recovery_kind=rejected_excerpt_regeneration`，建立新的 recovery generation 并转为
+`ready_for_execution`。正式 run 再次核对空摘要基线，重新调用 GLM、写入后 GET 验证，再进入英文
+覆盖翻译；旧 rejected 文本绝不作为摘要输入。不得删除 backup 或手工修改 JSON。
+
+纯文本验证允许明确 SQLSTATE 上下文中的五位字母数字状态码，例如 `SQLSTATE[HY000]`、
+`SQLSTATE [23000]`；这类数据库错误代码不是 WordPress shortcode。上下文外的 `[HY000]`、格式错误的
+状态码、真正 shortcode 和任何 HTML 仍然拒绝。
+
+### 8.3 隔离规则
 
 - 批次 runner 始终按固定 CSV 顺序逐篇处理，每篇外层单独捕获异常。
 - 一篇失败写入事件和协调状态后立即处理下一篇，进程级配置错误除外。
@@ -268,7 +295,7 @@ python3 bin/history-migration.py summary --json
   但不得改变尚未处理文章的状态。
 - 最终始终输出 `completed`、`failed`、`pending`、`blocked` 数量及 ID。
 
-### 8.3 有限重试
+### 8.4 有限重试
 
 - 保留现有摘要内容校验“一次执行最多 3 次”的内部规则，不在协调器里复制。
 - 协调器的**运行级自动重试建议上限为每阶段 2 次**（首次运行加 1 次自动重试）。
@@ -279,15 +306,15 @@ python3 bin/history-migration.py summary --json
 - 每次尝试记录 `stage`、`attempt`、开始/结束时间、错误类型、脱敏原因和结果；达到上限转 `blocked`。
 - 禁止递归和无限循环；批次 resume 也不能重置累计次数。
 
-### 8.4 Resume 语义
+### 8.5 Resume 语义
 
 - `resume` 只选择协调状态为等待类、`excerpt_failed`、`ready_for_translation_resume` 或
   `translation_failed` 的文章；默认跳过 `paused`，拒绝 `completed` 和 `blocked`。
 - 对未开始摘要的 pending 文章，执行普通单篇入口。
 - 对 execution JSON 已进入 `chinese_excerpt_saved`、`translation_started` 或
   `translation_failed` 的文章，只调用现有 `--execute --resume`。
-- `excerpt_rejected` 当前不能用现有 `--resume`；在运行级次数未耗尽时可显式重新普通执行，
-  复用现有写前备份和安全检查。耗尽后 blocked。
+- `excerpt_rejected` 不能用现有 `--resume`，也不能直接重新普通执行；必须按 8.2 的审计恢复流程
+  创建 recovery generation 后再执行指定单篇。
 - 恢复前先协调生产现状与 execution JSON。无法判断“API 是否成功”时不得盲目重发：
   SlyTranslate 使用现有 `translation_started` 收敛；其他无法收敛情形进入 blocked。
 

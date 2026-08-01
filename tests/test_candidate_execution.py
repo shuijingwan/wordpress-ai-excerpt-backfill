@@ -14,6 +14,13 @@ POST_9452_EXCERPTS = (
     "在 VS Code 中按下 Ctrl + S 后文件意外还原至修改前状态，经检查发现 Editor: Format On Save 设置已开启。实际操作并非撤销，而是 Go 的自动格式化工具在保存时将代码修正为合法状态。排查发现源码中将 math.pi 改为 math.Pi 后，文件即可正常保存，解决了因格式化规则导致的保存还原问题。",
 )
 
+POST_8669_REJECTED_EXCERPT = (
+    "在 Laravel 9 中执行数据库迁移时遇到 SQLSTATE[HY000] 错误，提示 Incorrect DECIMAL value。"
+    "将报错的 SQL 在 Navicat for MySQL 中执行后依然报错。经检查迁移文件和表结构，发现表中字段 "
+    "stock_out_sort 存在空字符串值。将该空字符串手动修改为 99801708945158 后再次执行数据库迁移，"
+    "操作成功且不再报错。"
+)
+
 
 def digest(value="x"):
     return hashlib.sha256(value.encode()).hexdigest()
@@ -146,6 +153,43 @@ class SafetyBoundaryTest(unittest.TestCase):
     def test_plain_single_paragraph_excerpt_is_accepted(self):
         raw = "这篇文章介绍一个具体技术问题的背景和排查过程，说明关键操作步骤、实施条件及其原因，并依据实际执行结果总结解决方案和注意事项，同时准确保留相关产品与技术名称，避免加入原文没有提及的判断，可直接作为中文摘要保存。"
         self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_sqlstate_codes_are_not_treated_as_shortcodes(self):
+        cases = (
+            "在 Laravel 9 中执行迁移时遇到 SQLSTATE[HY000] 错误。",
+            "查询失败并返回 SQLSTATE[23000]: Integrity constraint violation。",
+            "MySQL 返回 SQLSTATE[42S02]，表示数据表不存在。",
+            "错误代码为 SQLSTATE [HY000]。",
+            "错误代码为 SQLSTATE [23000]。",
+            "错误代码为 SQLSTATE [42S02]。",
+            "错误代码为 sqlstate[hy000]。",
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(raw, validate_generated_excerpt(raw, minimum=1))
+
+    def test_real_post_8669_rejected_excerpt_is_now_accepted(self):
+        self.assertEqual(
+            POST_8669_REJECTED_EXCERPT,
+            validate_generated_excerpt(POST_8669_REJECTED_EXCERPT),
+        )
+
+    def test_real_shortcodes_and_html_remain_rejected(self):
+        cases = (
+            '[caption id="attachment_123"]图片[/caption]',
+            '[gallery ids="1,2,3"]',
+            '正文包含 [custom_shortcode]。',
+            '错误代码为 <code>SQLSTATE[HY000]</code>。',
+        )
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises(ExcerptValidationError):
+                validate_generated_excerpt(raw, minimum=1)
+
+    def test_invalid_or_context_free_sqlstate_brackets_are_not_exempt(self):
+        for raw in ("[HY000]", "SQLSTATE[HY00]", "SQLSTATE[HY0000]", "SQLSTATE[HY-00]"):
+            with self.subTest(raw=raw), self.assertRaisesRegex(
+                    ExcerptValidationError, "HTML or shortcode"):
+                validate_generated_excerpt(raw, minimum=1)
 
     def test_post_9452_real_excerpts_are_accepted(self):
         for raw in POST_9452_EXCERPTS:

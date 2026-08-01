@@ -70,6 +70,26 @@ class ExecuteCliConstructionTest(unittest.TestCase):
             glm.assert_called_once(); self.assertIs(glm_instance, flow_class.call_args.args[2])
             flow.execute.assert_called_once_with(1, resume=False)
 
+    def test_recovery_restart_execute_still_constructs_glm_and_regenerates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = self.write_manifest(directory)
+            flow = mock.Mock()
+            flow.execute.return_value = {"english_post_id": 1001, "status": "completed"}
+            glm_instance = object()
+            with mock.patch("src.wordpress_clients.WordPressRestClient"), \
+                 mock.patch("src.wordpress_clients.SlyTranslateClient"), \
+                 mock.patch("src.polylang_ssh.PolylangSshChecker"), \
+                 mock.patch("src.glm47_excerpt_client.Glm47ExcerptClient",
+                            return_value=glm_instance) as glm, \
+                 mock.patch("src.single_candidate_flow.SingleCandidateFlow",
+                            return_value=flow) as flow_class, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                CLI.main(["--post-id", "1", "--execute", "--recovery-restart",
+                          "--manifest", str(manifest)])
+            glm.assert_called_once()
+            self.assertIs(glm_instance, flow_class.call_args.args[2])
+            flow.execute.assert_called_once_with(1, resume=False)
+
 
 if __name__ == "__main__":
     unittest.main()

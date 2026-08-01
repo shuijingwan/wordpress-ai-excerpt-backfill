@@ -16,6 +16,11 @@ VALID_EXCERPT = (
     "这篇文章说明一个具体技术问题的背景、排查思路和完整操作过程，并根据实际执行结果总结最终结论，"
     "同时保留关键技术名称，避免加入原文没有提及的效果、判断或营销表达，可直接作为博客文章的中文摘要使用。"
 )
+SQLSTATE_EXCERPT = (
+    "在 Laravel 9 中执行数据库迁移时遇到 SQLSTATE[HY000] 错误，提示 Incorrect DECIMAL value。"
+    "将报错的 SQL 在 Navicat for MySQL 中执行后依然报错。经检查迁移文件和表结构，发现表中字段 "
+    "stock_out_sort 存在空字符串值。修正异常值后再次执行数据库迁移，操作成功且不再报错。"
+)
 CONTENT = (
     '<!-- wp:paragraph --><p>这是一段用于生成摘要的正常中文说明文字。</p><!-- /wp:paragraph -->'
     '<!-- wp:kevinbatdorf/code-block-pro -->'
@@ -171,6 +176,17 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(1, glm.calls)
             self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
             self.assertNotEqual(old_excerpt, wp.posts[1]["excerpt"]["raw"])
+
+    def test_rejected_excerpt_recovery_generation_regenerates_sqlstate_excerpt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wp = MockWp(); self.prepare_recovery_restart(directory, wp, "")
+            glm = SequenceGlm([SQLSTATE_EXCERPT]); translator = MockTranslator(wp)
+            flow, _, _, _, _ = self.make_flow(directory, wp, glm, translator)
+            result = flow.execute(1)
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(1, glm.calls)
+            self.assertEqual(SQLSTATE_EXCERPT, wp.posts[1]["excerpt"]["raw"])
+            self.assertEqual(1, translator.calls)
 
     def test_recovery_generation_fails_if_excerpt_changes_before_run(self):
         with tempfile.TemporaryDirectory() as directory:

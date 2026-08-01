@@ -2266,7 +2266,7 @@ def _select_batch(batches, batch_id):
     return selected
 
 
-def _run_items(root, batch_id=None):
+def _run_items(root, batch_id=None, post_id=None):
     root, batches, _, executions, states = _context(root)
     items = []
     for batch in _select_batch(batches, batch_id):
@@ -2293,6 +2293,9 @@ def _run_items(root, batch_id=None):
             if execution and not recovered_restart and not _source_restart_prepared(
                     state, _execution_details(root, article)):
                 reasons.append("execution evidence already exists")
+            if (state.get("source_restart_recovery", {}).get("status") == "applied"
+                    and post_id != article["chinese_post_id"]):
+                reasons.append("recovery generation requires explicit matching --post-id")
             if _manifest_for(root, state) is None:
                 reasons.append("single-candidate execution manifest is missing")
             try:
@@ -2309,7 +2312,7 @@ def _run_items(root, batch_id=None):
 
 def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                     runner=subprocess.run, max_run_attempts=MAX_RUN_ATTEMPTS):
-    root, items = _run_items(root, batch_id)
+    root, items = _run_items(root, batch_id, post_id)
     if post_id is not None:
         items = [item for item in items if item["post_id"] == int(post_id)]
     if not execute:
@@ -2743,7 +2746,7 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
               progress=None, sleeper=time.sleep,
               max_attempts=MAX_ARTICLE_ATTEMPTS,
               retry_delay=ARTICLE_RETRY_DELAY, source_factory=None):
-    root, items = _run_items(root, batch_id)
+    root, items = _run_items(root, batch_id, post_id)
     if post_id is not None:
         items = [item for item in items if item["post_id"] == int(post_id)]
     if not execute:
@@ -3218,9 +3221,6 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
     reasons = []
     if state["workflow_status"] == "completed":
         reasons.append("completed article cannot restart from current production")
-    elif state["workflow_status"] not in {"blocked", "translation_failed"}:
-        reasons.append(
-            f"workflow_status is {state['workflow_status']}, not blocked or translation_failed")
     if not execution_path.is_file() or not prewrite_path.is_file():
         reasons.append("both execution and pre-write evidence are required")
         return root, article, state, None, None, None, reasons
@@ -3233,8 +3233,48 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
             (prewrite.get("english_post_id"), "pre-write English", article["english_post_id"])):
         if value != expected:
             reasons.append(f"{name} post ID mismatch")
-    if execution.get("status") != "translation_failed":
-        reasons.append("execution status is not translation_failed")
+    execution_status = execution.get("status")
+    if execution_status == "translation_failed":
+        recovery_kind = "source_changed_after_translation_failure"
+        allowed_workflow_statuses = {"blocked", "translation_failed"}
+    elif execution_status == "excerpt_rejected":
+        recovery_kind = "rejected_excerpt_regeneration"
+        allowed_workflow_statuses = {"excerpt_failed"}
+    else:
+        recovery_kind = None
+        allowed_workflow_statuses = set()
+        reasons.append(
+            "execution status is neither translation_failed nor excerpt_rejected")
+    if (state["workflow_status"] != "completed"
+            and state["workflow_status"] not in allowed_workflow_statuses):
+        reasons.append(
+            f"workflow_status {state['workflow_status']} is incompatible with "
+            f"execution status {execution_status}")
+
+    rejected_evidence = []
+    if recovery_kind == "rejected_excerpt_regeneration":
+        paths = execution.get("rejected_excerpt_paths")
+        if not isinstance(paths, list) or not paths:
+            reasons.append("excerpt_rejected evidence paths are required")
+        else:
+            rejected_root = (
+                root / "data/backups/single-candidate/rejected").resolve()
+            for value in paths:
+                try:
+                    path = Path(value)
+                    if not path.is_absolute():
+                        path = root / path
+                    path = path.resolve(strict=True)
+                    path.relative_to(rejected_root)
+                    if (not path.is_file()
+                            or not path.name.startswith(f"chinese-{int(post_id)}-")):
+                        raise ValueError("unexpected rejected excerpt file")
+                    rejected_evidence.append({
+                        "source_path": _relative(path, root),
+                        "sha256": _file_sha256(path),
+                    })
+                except (OSError, ValueError) as error:
+                    reasons.append(f"invalid rejected excerpt evidence: {value}: {error}")
     try:
         manifest_path, old_manifest = _restart_manifest_row(root, state, article)
         config = json.loads(
@@ -3277,7 +3317,8 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         "syntaxhighlighter_zero": analysis["syntaxhighlighter_count"] == expected_syntax == 0,
         "code_block_pro_count": counts.get("kevinbatdorf/code-block-pro", 0) == expected_cbp,
         "chinese_excerpt_known_for_restart": (
-            current_excerpt_empty or current_matches_old_generated),
+            current_excerpt_empty if recovery_kind == "rejected_excerpt_regeneration"
+            else current_excerpt_empty or current_matches_old_generated),
         "phase1_eligible": live["phase1_eligible"],
     }
     old_hashes = prewrite.get("sha256") if isinstance(prewrite.get("sha256"), dict) else {}
@@ -3286,7 +3327,14 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         current_title_sha != old_hashes.get("chinese_title")
         or live["chinese_content_sha256"] != old_hashes.get("chinese_content")
     )
-    checks["chinese_source_changed"] = source_changed
+    if recovery_kind == "rejected_excerpt_regeneration":
+        checks["chinese_source_unchanged"] = not source_changed
+        checks["old_generated_excerpt_absent"] = not old_generated_nonempty
+        checks["rejected_excerpt_evidence_complete"] = bool(
+            rejected_evidence) and len(rejected_evidence) == len(
+                execution.get("rejected_excerpt_paths") or [])
+    else:
+        checks["chinese_source_changed"] = source_changed
     checks.update({
         f"english_{field}_unchanged": live[f"english_{field}_sha256"] == old_hashes.get(f"english_{field}")
         for field in ("title", "excerpt", "content")
@@ -3302,12 +3350,14 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
             sha256_text(old_generated_excerpt) if old_generated_nonempty else None),
         "current_excerpt_matches_old_generated": current_matches_old_generated,
         "restart_excerpt_state": excerpt_state,
+        "recovery_kind": recovery_kind,
+        "rejected_excerpt_evidence": rejected_evidence,
     }
     return root, article, state, execution, prewrite, current, reasons
 
 
 def restart_from_current(root, post_id, apply=False, source_factory=None,
-                         reason="Chinese source edited after failed execution"):
+                         reason=None):
     root, article, state, execution, prewrite, current, reasons = (
         _restart_from_current_plan(root, post_id, source_factory))
     base = {
@@ -3324,6 +3374,7 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
             "current_excerpt_matches_old_generated":
                 current["current_excerpt_matches_old_generated"],
             "restart_excerpt_state": current["restart_excerpt_state"],
+            "recovery_kind": current["recovery_kind"],
         } if current else {}),
         "changed": False, "writes_performed": False, "integrity_ok": True,
     }
@@ -3348,11 +3399,34 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
         old_prewrite_sha = _file_sha256(prewrite_path)
         shutil.copy2(execution_path, archive / execution_path.name)
         shutil.copy2(prewrite_path, archive / prewrite_path.name)
+        if (_file_sha256(archive / execution_path.name) != old_execution_sha
+                or _file_sha256(archive / prewrite_path.name) != old_prewrite_sha):
+            raise ReadError("archived execution or pre-write SHA-256 mismatch")
+        archived_rejected = []
+        if current["rejected_excerpt_evidence"]:
+            rejected_archive = archive / "rejected"
+            rejected_archive.mkdir(mode=0o700)
+            for evidence in current["rejected_excerpt_evidence"]:
+                source_path = root / evidence["source_path"]
+                archived_path = rejected_archive / source_path.name
+                shutil.copy2(source_path, archived_path)
+                archived_sha = _file_sha256(archived_path)
+                if archived_sha != evidence["sha256"]:
+                    raise ReadError("archived rejected excerpt SHA-256 mismatch")
+                archived_rejected.append({
+                    **evidence,
+                    "archive_path": _relative(archived_path, root),
+                    "archive_sha256": archived_sha,
+                })
+        recovery_reason = reason or (
+            "Regenerate excerpts rejected by the corrected validator"
+            if current["recovery_kind"] == "rejected_excerpt_regeneration"
+            else "Chinese source edited after failed execution")
         recovery_snapshot = {
             "schema_version": 1, "batch_id": state["batch_id"],
             "chinese_post_id": int(post_id), "english_post_id": article["english_post_id"],
             "recovery_generation": generation, "recovered_at": timestamp_text,
-            "reason": reason, "old_execution_sha256": old_execution_sha,
+            "reason": recovery_reason, "old_execution_sha256": old_execution_sha,
             "old_pre_write_sha256": old_prewrite_sha,
             "old_execution_status": execution.get("status"),
             "old_generated_excerpt": execution.get("generated_excerpt"),
@@ -3363,6 +3437,8 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
             "current_excerpt_matches_old_generated":
                 current["current_excerpt_matches_old_generated"],
             "restart_excerpt_state": current["restart_excerpt_state"],
+            "recovery_kind": current["recovery_kind"],
+            "rejected_excerpt_evidence": archived_rejected,
             "preserved_last_failure": state.get("last_failure"),
             "preserved_retry_counts": state.get("retry_counts", {}),
             "safety_checks": current["checks"],
@@ -3410,16 +3486,17 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
             },
             "source_restart_recovery": {
                 "status": "applied", "generation": generation,
-                "recovered_at": timestamp_text, "reason": reason,
+                "recovered_at": timestamp_text, "reason": recovery_reason,
                 "archive": _relative(archive, root),
+                "recovery_kind": current["recovery_kind"],
                 "restart_excerpt_state": current["restart_excerpt_state"],
                 "expected_pre_run_excerpt_sha256": current["current_excerpt_sha256"],
                 "preserved_last_failure": state.get("last_failure"),
             },
         })
         event = _transition_event(
-            "source_changed_execution_restarted", state, previous,
-            "ready_for_execution", reason, recovery_snapshot, timestamp_text,
+            "failed_execution_restarted", state, previous,
+            "ready_for_execution", recovery_reason, recovery_snapshot, timestamp_text,
             f"restart-current|{generation}|{old_execution_sha}|{old_prewrite_sha}")
         _persist_transition(root, _state_path(root, state["batch_id"], int(post_id)), state, event)
         return {**base, "previous_status": previous,
@@ -3851,10 +3928,10 @@ def parse_args(argv=None):
         help=argparse.SUPPRESS)
     restart = subparsers.add_parser(
         "restart-from-current",
-        help="preview or archive a failed execution and restart from current Chinese source")
+        help="preview or safely rebuild a failed single-article execution")
     restart.add_argument("--post-id", required=True, type=int)
     restart.add_argument("--apply", action="store_true")
-    restart.add_argument("--reason", default="Chinese source edited after failed execution")
+    restart.add_argument("--reason")
     restart.add_argument("--json", action="store_true", dest="json_output")
     restart.add_argument(
         "--repo-root", type=Path, default=repository_root(),

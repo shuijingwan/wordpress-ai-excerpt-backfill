@@ -180,7 +180,15 @@ def validate_generated_excerpt(value, minimum=80, maximum=300):
     forbidden = ("<!--", "-->", "```", "[/", "http://", "https://")
     if any(token in text.lower() for token in forbidden):
         raise ExcerptValidationError("generated Chinese excerpt contains forbidden markup or payload", value)
-    if re.search(r"<[^>]+>|\[[A-Za-z/][^\]]*\]", text):
+    # SQLSTATE class/subclass codes are technical identifiers, not WordPress
+    # shortcodes.  Mask only a complete five-character code in an explicit
+    # SQLSTATE context before applying the existing generic shortcode rule.
+    shortcode_text = re.sub(
+        r"(?i)\bSQLSTATE[ \t]*\[[A-Z0-9]{5}\]",
+        "SQLSTATE_CODE",
+        text,
+    )
+    if re.search(r"<[^>]+>|\[[A-Za-z/][^\]]*\]", shortcode_text):
         raise ExcerptValidationError("generated Chinese excerpt contains HTML or shortcode markup", value)
     if (re.search(r"(?m)^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)", text)
             or re.search(r"[*_]{2}", text)):

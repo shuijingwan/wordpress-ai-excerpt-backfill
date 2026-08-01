@@ -136,6 +136,22 @@ python3 -m unittest discover -s tests -v
 摘要；它仍会用当前标题和正文重新调用 GLM，绝不复用旧 `generated_excerpt`。run 前摘要若发生变化
 会 fail closed。普通 fresh run 仍要求空摘要。
 
+同一入口也处理 `workflow_status=excerpt_failed` 且 execution 为 `excerpt_rejected` 的已知拒绝场景。
+这不是网络失败，也不能用普通 `resume`：先 preview，再 `--apply`，最后只执行目标篇。
+
+```bash
+python3 bin/history-migration.py restart-from-current --post-id ID --json
+python3 bin/history-migration.py restart-from-current --post-id ID --apply
+python3 bin/history-migration.py run-ready --batch-id BATCH --post-id ID --execute
+```
+
+该路径要求中文摘要为空、中文 title/content 与 pre-write 完全一致、英文 title/excerpt/content 未变化，
+且所有 execution 记录的 rejected 摘要文件存在于受控 evidence 目录。apply 会按 SHA-256 归档旧
+execution、pre-write 和 rejected 文本，创建新的 recovery generation；正式 run 会重新调用 GLM，
+不会复用旧 rejected 文本。合法的五位 `SQLSTATE[HY000]`、`SQLSTATE [23000]` 等数据库状态码不是
+WordPress shortcode；只有明确 SQLSTATE 上下文会被豁免，真正的 shortcode 和 HTML 仍会被拒绝。
+禁止删除 backup 或手工修改 execution、coordination JSON。
+
 ## Mixed SyntaxHighlighter 固定批次构建
 
 `bin/build-mixed-syntaxhighlighter-batch.py` 用于从本地 Mixed preview、只读 WordPress raw JSONL

@@ -2223,9 +2223,11 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(MODULE.EXIT_OK, code)
         self.assertTrue(json.loads(output.getvalue())["eligible"])
 
-    def restart_source(self, *, english_title="English", excerpt=""):
+    def restart_source(self, *, english_title="English", english_excerpt="",
+                       english_content="English body", excerpt="",
+                       chinese_title="人工修复标题", chinese_content=None):
         from src.candidate_execution import sha256_text
-        content = (
+        content = chinese_content or (
             '<!-- wp:kevinbatdorf/code-block-pro -->'
             '<div class="wp-block-kevinbatdorf-code-block-pro"><textarea>x</textarea>'
             '<pre class="shiki"><code><span class="line">changed code</span>'
@@ -2236,13 +2238,13 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             def get_post(self, post_id):
                 if int(post_id) == 401:
                     return {"id": 401, "status": "publish",
-                            "title": {"raw": "人工修复标题"},
+                            "title": {"raw": chinese_title},
                             "excerpt": {"raw": excerpt},
                             "content": {"raw": content}}
                 return {"id": 1401, "status": "publish",
                         "title": {"raw": english_title},
-                        "excerpt": {"raw": ""},
-                        "content": {"raw": "English body"}}
+                        "excerpt": {"raw": english_excerpt},
+                        "content": {"raw": english_content}}
 
             def check(self, chinese, english):
                 return {"chinese_post_id": 401, "chinese_language": "zh",
@@ -2275,6 +2277,38 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         }
         MODULE._atomic_write_json(MODULE._prewrite_path(self.root, 401), prewrite)
         return state_path, source, content
+
+    def prepare_rejected_restart(self, *, excerpt="", missing_rejected=False):
+        state_path, source, content = self.prepare_source_restart(excerpt=excerpt)
+        from src.candidate_execution import sha256_text
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "excerpt_failed"
+        MODULE._atomic_write_json(state_path, state)
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        rejected_dir = self.root / "data/backups/single-candidate/rejected"
+        rejected_dir.mkdir()
+        rejected_paths = []
+        for attempt in range(1, 4):
+            path = rejected_dir / f"chinese-401-glm47-rejected-attempt-{attempt}.txt"
+            if not (missing_rejected and attempt == 3):
+                path.write_text(
+                    f"第 {attempt} 次摘要包含 SQLSTATE[HY000]，此前被错误识别为 shortcode。",
+                    encoding="utf-8")
+            rejected_paths.append(str(path))
+        execution_path = MODULE._execution_path(self.root, 401)
+        MODULE._atomic_write_json(execution_path, {
+            "status": "excerpt_rejected", "chinese_post_id": 401,
+            "english_post_id": 1401, "attempts": 3,
+            "error": "generated Chinese excerpt contains HTML or shortcode markup",
+            "rejected_excerpt_paths": rejected_paths,
+        })
+        return state_path, source, content, rejected_paths
 
     def test_restart_from_current_preview_is_read_only(self):
         _, source, _ = self.prepare_source_restart()
@@ -2346,11 +2380,21 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(old_prewrite_sha, MODULE._file_sha256(
             archive / "chinese-401.pre-write.json"))
         self.assertEqual(other_before, other_path.read_bytes())
-        run_plan = MODULE._run_items(self.root)[1]
+        run_plan = MODULE._run_items(self.root, post_id=401)[1]
         item = next(value for value in run_plan if value["post_id"] == 401)
         self.assertTrue(item["allowed"], item["blocking_reasons"])
         self.assertIn("--recovery-restart", MODULE._executor_command(
             self.root, state, preflight=True))
+        batch_plan = MODULE.run_ready(self.root)
+        recovery_item = next(
+            item for item in batch_plan["items"] if item["post_id"] == 401)
+        self.assertFalse(recovery_item["allowed"])
+        self.assertTrue(any(
+            "explicit matching --post-id" in reason
+            for reason in recovery_item["blocking_reasons"]))
+        single_plan = MODULE.run_ready(self.root, post_id=401)
+        self.assertEqual(1, single_plan["selected_count"])
+        self.assertTrue(single_plan["items"][0]["allowed"])
 
     def test_restart_from_current_fails_closed_on_english_drift(self):
         _, _, _ = self.prepare_source_restart()
@@ -2361,6 +2405,87 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("english_title_unchanged", result["blocking_reasons"])
         self.assertEqual(before, self.snapshot())
+
+    def test_excerpt_rejected_restart_preview_is_read_only(self):
+        _, source, _, _ = self.prepare_rejected_restart()
+        before = self.snapshot()
+        result = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(result["eligible"], result["blocking_reasons"])
+        self.assertEqual(
+            "rejected_excerpt_regeneration",
+            result["excerpt_observation"]["recovery_kind"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_excerpt_rejected_restart_apply_archives_all_evidence(self):
+        state_path, source, _, rejected_paths = self.prepare_rejected_restart()
+        originals = {
+            Path(path).name: MODULE._file_sha256(Path(path))
+            for path in rejected_paths
+        }
+        execution_sha = MODULE._file_sha256(MODULE._execution_path(self.root, 401))
+        prewrite_sha = MODULE._file_sha256(MODULE._prewrite_path(self.root, 401))
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertTrue(result["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual(1, state["recovery_generation"])
+        archive = self.root / result["archive"]
+        audit = json.loads((archive / "recovery.json").read_text(encoding="utf-8"))
+        self.assertEqual("excerpt_rejected", audit["old_execution_status"])
+        self.assertEqual("rejected_excerpt_regeneration", audit["recovery_kind"])
+        self.assertEqual(execution_sha, audit["old_execution_sha256"])
+        self.assertEqual(prewrite_sha, audit["old_pre_write_sha256"])
+        self.assertEqual(3, len(audit["rejected_excerpt_evidence"]))
+        for evidence in audit["rejected_excerpt_evidence"]:
+            self.assertEqual(originals[Path(evidence["source_path"]).name],
+                             evidence["sha256"])
+            self.assertEqual(evidence["sha256"], evidence["archive_sha256"])
+            self.assertEqual(evidence["sha256"], MODULE._file_sha256(
+                self.root / evidence["archive_path"]))
+        execution = json.loads(MODULE._execution_path(
+            self.root, 401).read_text(encoding="utf-8"))
+        self.assertEqual("prepared", execution["status"])
+        self.assertNotIn("generated_excerpt", execution)
+        self.assertIn("--recovery-restart", MODULE._executor_command(
+            self.root, state, preflight=True))
+
+    def test_excerpt_rejected_restart_fails_closed_on_drift_or_wrong_status(self):
+        state_path, source, content, _ = self.prepare_rejected_restart()
+        before = self.snapshot()
+        for changed_source in (
+                self.restart_source(excerpt="人工摘要")[0],
+                self.restart_source(chinese_title="漂移标题", chinese_content=content)[0],
+                self.restart_source(chinese_content=content.replace(
+                    "changed code", "third-party changed code"))[0],
+                self.restart_source(english_title="drifted English title")[0],
+                self.restart_source(english_excerpt="drifted English excerpt")[0],
+                self.restart_source(english_content="drifted English body")[0]):
+            result = MODULE.restart_from_current(
+                self.root, 401, apply=True, source_factory=lambda rows, s=changed_source: s)
+            self.assertFalse(result["eligible"])
+            self.assertEqual(before, self.snapshot())
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution["status"] = "prepared"
+        MODULE._atomic_write_json(execution_path, execution)
+        result = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertTrue(any("neither" in reason for reason in result["blocking_reasons"]))
+
+    def test_excerpt_rejected_restart_requires_parseable_complete_evidence(self):
+        _, source, _, _ = self.prepare_rejected_restart(missing_rejected=True)
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertTrue(any("invalid rejected excerpt evidence" in reason
+                            for reason in result["blocking_reasons"]))
+        MODULE._execution_path(self.root, 401).write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(MODULE.ReadError, "invalid execution JSON"):
+            MODULE.restart_from_current(
+                self.root, 401, source_factory=lambda rows: source)
 
     def test_restart_from_current_rejects_completed_and_missing_evidence(self):
         state_path, source, _ = self.prepare_source_restart()
