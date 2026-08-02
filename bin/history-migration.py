@@ -3328,7 +3328,6 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         or live["chinese_content_sha256"] != old_hashes.get("chinese_content")
     )
     if recovery_kind == "rejected_excerpt_regeneration":
-        checks["chinese_source_unchanged"] = not source_changed
         checks["old_generated_excerpt_absent"] = not old_generated_nonempty
         checks["rejected_excerpt_evidence_complete"] = bool(
             rejected_evidence) and len(rejected_evidence) == len(

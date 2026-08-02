@@ -2451,14 +2451,28 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("--recovery-restart", MODULE._executor_command(
             self.root, state, preflight=True))
 
-    def test_excerpt_rejected_restart_fails_closed_on_drift_or_wrong_status(self):
-        state_path, source, content, _ = self.prepare_rejected_restart()
+    def test_excerpt_rejected_restart_accepts_modified_chinese_source(self):
+        state_path, source, _, _ = self.prepare_rejected_restart()
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"]["chinese_title"] = "a" * 64
+        prewrite["sha256"]["chinese_content"] = "b" * 64
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+
+        preview = MODULE.restart_from_current(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(preview["eligible"], preview["blocking_reasons"])
+        applied = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+
+    def test_excerpt_rejected_restart_fails_closed_on_excerpt_or_english_drift(self):
+        state_path, source, _, _ = self.prepare_rejected_restart()
         before = self.snapshot()
         for changed_source in (
                 self.restart_source(excerpt="人工摘要")[0],
-                self.restart_source(chinese_title="漂移标题", chinese_content=content)[0],
-                self.restart_source(chinese_content=content.replace(
-                    "changed code", "third-party changed code"))[0],
                 self.restart_source(english_title="drifted English title")[0],
                 self.restart_source(english_excerpt="drifted English excerpt")[0],
                 self.restart_source(english_content="drifted English body")[0]):
