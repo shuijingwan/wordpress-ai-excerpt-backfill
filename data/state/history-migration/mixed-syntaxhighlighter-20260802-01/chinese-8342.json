@@ -1,0 +1,74 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260802-01",
+  "batch_position": 8,
+  "blocked_reasons": [],
+  "chinese_post_id": 8342,
+  "english_post_id": 12132,
+  "execution_evidence": {
+    "sha256": "edf87b0e36b1340d81e8bc134b2f45032a7e5826448ceeb49026ee64a296c04a",
+    "source_file": "data/backups/single-candidate/chinese-8342.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-02T01:35:39.852642+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-02T01:07:21.639019+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-02T01:35:39.852642+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "occurred_at": "2026-08-02T02:00:57.857343+00:00",
+    "reason": "transient_network_error",
+    "returncode": 2,
+    "stage": "run",
+    "stderr_summary": "ERROR: read-only Polylang SSH check timed out after 2 attempts\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 1,
+    "confirmed_at": "2026-08-02T01:35:39.852642+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 1
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260802-01.csv",
+  "source_batch_sha256": "5b6a67e99b7aa0b5abc163fc18c06ab9c06d9493c1bd7490dbed9bb59e6ed980",
+  "source_row_sha256": "a2b52e8dba3740dcb916623a86e7ac7d9e388fb568358e041b8d32db22728fc9",
+  "updated_at": "2026-08-02T02:02:12.751669+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "c62117e81cf3491bfe63761373179a8569cbbc07ce366d4d9a515abd0ffdd421",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "a7148cd8fc408c9a36b0e0f068585da99aa3c5e4c93d5e29b17bed37e4549f37",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260802-01/chinese-8342.csv",
+    "status": "ready",
+    "validated_at": "2026-08-02T01:39:27.945726+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
