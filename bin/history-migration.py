@@ -1927,12 +1927,34 @@ def _execution_details(root, article):
     status = value.get("status")
     if status not in EXECUTION_STATUS_MAP:
         raise ReadError(f"{path}: unsupported execution status {status!r}")
+    error_response = value.get("error_response")
+    if not isinstance(error_response, dict):
+        error_response = None
     return {
         "chinese_post_id": chinese_id, "english_post_id": english_id,
         "status": status, "source_file": _relative(path, root),
         "sha256": _file_sha256(path),
         "mtime_ns": path.stat().st_mtime_ns,
+        "error_response": error_response,
+        "error_response_excerpt": _safe_subprocess_summary(
+            value.get("error_response_excerpt", "")),
     }
+
+
+def _structured_execution_failure(execution):
+    """Prefer the executor's structured WordPress evidence over HTTP status."""
+    response = (execution or {}).get("error_response") or {}
+    code = response.get("code")
+    message = response.get("message")
+    if code == "swq_full_article_token_validation_failed":
+        category = "protected_token_validation_error"
+    elif code:
+        category = "wordpress_api_error"
+    else:
+        return None
+    readable = ": ".join(str(value) for value in (code, message) if value)
+    return {"category": category, "wordpress_code": code,
+            "wordpress_message": message, "error_summary": readable}
 
 
 def _apply_execution_state(root, state, execution, reason):
@@ -2142,6 +2164,9 @@ def _record_attempt_outcome(root, state, stage, attempt, completed, failure=None
             "stage": stage, "attempt": attempt,
             "reason": failure["category"], "occurred_at": timestamp,
             "returncode": failure["returncode"],
+            "error_summary": failure.get("error_summary", ""),
+            "wordpress_code": failure.get("wordpress_code"),
+            "wordpress_message": failure.get("wordpress_message"),
             "stderr_summary": failure.get("stderr_summary", ""),
             "stdout_summary": failure.get("stdout_summary", ""),
         }
@@ -2167,6 +2192,8 @@ def _operation_result(item, result, category, returncode, error, **values):
 
 def _failure_error(failure):
     return (
+        failure.get("error_summary")
+        or
         failure.get("stderr_summary")
         or failure.get("stdout_summary")
         or failure["category"]
@@ -2441,6 +2468,9 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                         root, state, "run", attempt, result)
                 else:
                     failure = _classify_subprocess_failure(completed, "execute")
+                    structured = _structured_execution_failure(execution)
+                    if structured:
+                        failure.update(structured)
                     if completed.returncode == 0:
                         failure["category"] = "incomplete_execution_state"
                     elif failure["category"] == "executor_failed_without_state":
@@ -2844,6 +2874,13 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
                         f"{mode} attempt was not eligible")
                 final["attempts"] = article_attempt
             if final["result"] == "completed":
+                break
+            if final.get("category") == "protected_token_validation_error":
+                final["execution_evidence"] = _relative(
+                    _execution_path(root, item["post_id"]), root)
+                final["next_step"] = (
+                    "fix the Chinese source if needed, then run recover "
+                    f"--post-id {item['post_id']} --execute")
                 break
             if progress:
                 progress("attempt_failed", index, total, item, final)
@@ -3504,6 +3541,107 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
                 "archive": _relative(archive, root)}
 
 
+def recover(root, post_id, execute=False, source_factory=None,
+            runner=subprocess.run):
+    """Select and, when requested, run one evidence-based recovery path."""
+    # Terminal states are decided entirely from coordination evidence.  This
+    # must precede every production observation so recovery remains a no-op
+    # even when production read-only access is unavailable.
+    root, _, fixed, _, states = _context(Path(root).resolve())
+    article = fixed.get(int(post_id))
+    if article is None:
+        raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+    state = states.get(int(post_id))
+    if state is None:
+        raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+    if state["workflow_status"] == "completed":
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "mode": "execute" if execute else "preview",
+            "repository_root": str(root), "batch_id": state["batch_id"],
+            "post_id": int(post_id),
+            "english_post_id": article["english_post_id"],
+            "current_status": "completed", "actual_error": "none",
+            "execution_evidence": _relative(_execution_path(root, post_id), root),
+            "production_source": "not_required", "strategy": "none",
+            "strategy_reasons": ["文章已经完成，无需恢复"],
+            "will_execute": "none", "baseline_rebuild": "not_run",
+            "reexecution": "not_run", "final_status": "completed",
+            "writes_performed": False, "integrity_ok": True,
+        }
+    root, article, state, execution, prewrite, current, reasons = (
+        _restart_from_current_plan(root, post_id, source_factory))
+    unavailable = any("production_readonly_unavailable" in reason
+                      for reason in reasons)
+    source_changed = bool(
+        current and current["checks"].get("chinese_source_changed"))
+    execution_status = execution.get("status") if execution else None
+    strategy = "blocked"
+    strategy_reasons = list(reasons)
+    if unavailable:
+        strategy_reasons = [
+            "production_readonly_unavailable: production data was not "
+            "obtained; cannot determine whether Chinese content changed"]
+    elif execution_status in {
+            "chinese_excerpt_saved", "translation_started",
+            "translation_failed"} and not source_changed:
+        ignored = {"chinese_source_changed"}
+        remaining = [reason for reason in reasons if reason not in ignored]
+        if not remaining and state["workflow_status"] in {
+                "ready_for_translation_resume", "translation_failed"}:
+            strategy, strategy_reasons = "resume", [
+                "production Chinese title and content match the pre-write baseline"]
+    elif source_changed:
+        remaining = [reason for reason in reasons
+                     if reason != "chinese_source_changed"]
+        if not remaining:
+            strategy, strategy_reasons = "restart_from_current", [
+                "production Chinese title or content changed after pre-write"]
+    evidence_path = _relative(_execution_path(root, post_id), root)
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "execute" if execute else "preview",
+        "repository_root": str(root), "batch_id": state["batch_id"],
+        "post_id": int(post_id), "english_post_id": article["english_post_id"],
+        "current_status": state["workflow_status"],
+        "actual_error": (_structured_execution_failure(
+            _execution_details(root, article)) or {}).get("category", "unknown"),
+        "execution_evidence": evidence_path,
+        "production_source": (
+            "unknown" if unavailable else "changed" if source_changed else "unchanged"),
+        "strategy": strategy, "strategy_reasons": strategy_reasons,
+        "will_execute": (
+            f"{strategy} -> execute_single_candidate"
+            if strategy != "blocked" else "blocked"),
+        "baseline_rebuild": "not_run", "reexecution": "not_run",
+        "final_status": state["workflow_status"],
+        "writes_performed": False, "integrity_ok": True,
+    }
+    if not execute or strategy == "blocked":
+        return result
+    if strategy == "restart_from_current":
+        restarted = restart_from_current(
+            root, post_id, apply=True, source_factory=source_factory)
+        if not restarted["eligible"] or not restarted["changed"]:
+            return {**result, "strategy": "blocked",
+                    "strategy_reasons": restarted["blocking_reasons"]}
+        result["baseline_rebuild"] = "completed"
+        operation = _run_ready_once(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner)
+    else:
+        operation = resume(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner)
+    item = operation["results"][0] if operation.get("results") else None
+    _, _, _, _, fresh_states = _context(root)
+    final_status = fresh_states[int(post_id)]["workflow_status"]
+    return {**result, "reexecution": (
+                "completed" if item and item["result"] == "completed" else "failed"),
+            "final_status": final_status, "operation_result": item,
+            "writes_performed": True}
+
+
 SUMMARY_KEYS = (
     "awaiting_manual_conversion", "awaiting_readonly_validation",
     "validation_failed", "ready_for_execution", "execution_in_progress",
@@ -3790,6 +3928,11 @@ def render_operation_text(result):
                 lines.append(f"  stderr: {item['stderr_summary']}")
             if item.get("stdout_summary"):
                 lines.append(f"  stdout: {item['stdout_summary']}")
+            if item.get("execution_evidence"):
+                lines.append(
+                    f"  execution evidence: {item['execution_evidence']}")
+            if item.get("next_step"):
+                lines.append(f"  下一步: {item['next_step']}")
     if "eligible" in result:
         suffix = (
             f" retry_count_run={result['retry_count_run']}"
@@ -3798,6 +3941,48 @@ def render_operation_text(result):
             f"eligible={result['eligible']} changed={result['changed']}{suffix}")
         if result["blocking_reasons"]:
             lines.append("blocked: " + ";".join(result["blocking_reasons"]))
+    return "\n".join(lines)
+
+
+def render_recover_text(result):
+    source_labels = {
+        "changed": "已修改", "unchanged": "未修改", "unknown": "未知",
+        "not_required": "无需检查"}
+    error_labels = {"none": "无"}
+    strategy_labels = {
+        "restart_from_current": "restart_from_current",
+        "resume": "resume", "blocked": "blocked", "none": "none"}
+    lines = [
+        f"模式: {result['mode']}",
+        f"文章: zh={result['post_id']} en={result['english_post_id']}",
+        f"当前状态: {result['current_status']}",
+        f"真实错误: {error_labels.get(result['actual_error'], result['actual_error'])}",
+        f"execution evidence: {result['execution_evidence']}",
+        f"生产中文源: {source_labels[result['production_source']]}",
+        f"恢复策略: {strategy_labels[result['strategy']]}",
+    ]
+    if result["strategy"] == "none":
+        lines.extend([
+            "将执行: 无", "写入操作: 否",
+            "原因: " + "; ".join(result["strategy_reasons"]),
+            "下一步: 无",
+        ])
+        return "\n".join(lines)
+    if result["mode"] == "preview":
+        lines.extend([
+            f"将执行: {result['will_execute']}",
+            "写入操作: 否",
+        ])
+    else:
+        lines.extend([
+            f"基线重建: {result['baseline_rebuild']}",
+            f"重新执行: {result['reexecution']}",
+            f"最终状态: {result['final_status']}",
+            "下一步: " + ("无" if result["final_status"] == "completed" else
+                          "; ".join(result["strategy_reasons"])),
+        ])
+    if result["strategy"] == "blocked":
+        lines.append("原因: " + "; ".join(result["strategy_reasons"]))
     return "\n".join(lines)
 
 
@@ -3910,6 +4095,14 @@ def parse_args(argv=None):
     resume_parser.add_argument(
         "--repo-root", type=Path, default=repository_root(),
         help=argparse.SUPPRESS)
+    recover_parser = subparsers.add_parser(
+        "recover", help="preview or execute evidence-based single-article recovery")
+    recover_parser.add_argument("--post-id", required=True, type=int)
+    recover_parser.add_argument("--execute", action="store_true")
+    recover_parser.add_argument("--json", action="store_true", dest="json_output")
+    recover_parser.add_argument(
+        "--repo-root", type=Path, default=repository_root(),
+        help=argparse.SUPPRESS)
     sync = subparsers.add_parser(
         "sync-execution", help="preview or apply existing execution evidence")
     sync.add_argument("--apply", action="store_true")
@@ -4005,6 +4198,10 @@ def main(argv=None):
                 args.repo_root, execute=args.execute, batch_id=args.batch_id,
                 post_id=args.post_id)
             output = render_operation_text(result)
+        elif args.command == "recover":
+            result = recover(
+                args.repo_root, args.post_id, execute=args.execute)
+            output = render_recover_text(result)
         elif args.command == "sync-execution":
             result = sync_execution(args.repo_root, apply=args.apply)
             output = render_operation_text(result)

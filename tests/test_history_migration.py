@@ -1408,6 +1408,38 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertNotIn("--resume", execution_commands[0])
         self.assertIn("--resume", execution_commands[1])
 
+    def test_token_validation_failure_is_classified_and_not_retried(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        executions = []
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            executions.append(command)
+            execution = {
+                "schema_version": 1, "chinese_post_id": 401,
+                "english_post_id": 1401, "status": "translation_failed",
+                "error_response": {
+                    "code": "swq_full_article_token_validation_failed",
+                    "message": "Protected token validation failed",
+                    "data": {"extra_tokens": ["SWQINLINE1END"]},
+                },
+            }
+            MODULE._atomic_write_json(MODULE._execution_path(self.root, 401), execution)
+            return mock.Mock(returncode=1, stdout="", stderr="HTTP Error 500")
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            sleeper=lambda seconds: self.fail("deterministic error must not wait"))
+        item = result["results"][0]
+        self.assertEqual("protected_token_validation_error", item["category"])
+        self.assertEqual(1, item["attempts"])
+        self.assertEqual(1, len(executions))
+        self.assertIn("Protected token validation failed", item["error"])
+        self.assertIn("execution.json", item["execution_evidence"])
+
     def test_excerpt_generated_with_saved_live_excerpt_retries_as_resume(self):
         self.prepare_converted()
         path = self.write_record_validation()
@@ -1918,6 +1950,9 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         state_path = self.prepare_translation_failed()
         other_path = MODULE._state_path(
             self.root, "syntaxhighlighter-20260723-01", 402)
+        other = json.loads(other_path.read_text(encoding="utf-8"))
+        other["workflow_status"] = "completed"
+        MODULE._atomic_write_json(other_path, other)
         other_before = other_path.read_bytes()
         state = json.loads(state_path.read_text(encoding="utf-8"))
         for _ in range(3):
@@ -2318,6 +2353,107 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertTrue(result["eligible"], result["blocking_reasons"])
         self.assertFalse(result["writes_performed"])
         self.assertEqual(before, self.snapshot())
+
+    def test_recover_selects_restart_for_changed_source(self):
+        _, source, _ = self.prepare_source_restart()
+        before = self.snapshot()
+        queries = []
+        result = MODULE.recover(
+            self.root, 401,
+            source_factory=lambda rows: queries.append(rows) or source)
+        self.assertEqual("restart_from_current", result["strategy"])
+        self.assertEqual("changed", result["production_source"])
+        self.assertEqual(1, len(queries))
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_recover_selects_resume_for_unchanged_source(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "translation_failed"
+        MODULE._atomic_write_json(state_path, state)
+        before = self.snapshot()
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("resume", result["strategy"])
+        self.assertEqual("unchanged", result["production_source"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_recover_completed_preview_skips_production_and_is_noop(self):
+        state_path, _, _ = self.prepare_source_restart()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        before = self.snapshot()
+        result = MODULE.recover(
+            self.root, 401,
+            source_factory=mock.Mock(side_effect=AssertionError(
+                "completed recovery must not query production")))
+        self.assertEqual("none", result["strategy"])
+        self.assertNotEqual("blocked", result["strategy"])
+        self.assertEqual("none", result["actual_error"])
+        self.assertEqual("not_required", result["production_source"])
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_recover_completed_execute_skips_every_action_and_renders_noop(self):
+        state_path, _, _ = self.prepare_source_restart()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        execution_before = MODULE._execution_path(self.root, 401).read_bytes()
+        state_before = state_path.read_bytes()
+        result = MODULE.recover(
+            self.root, 401, execute=True,
+            source_factory=mock.Mock(side_effect=AssertionError(
+                "completed recovery must not query production")),
+            runner=mock.Mock(side_effect=AssertionError(
+                "completed recovery must not execute a candidate")))
+        output = MODULE.render_recover_text(result)
+        self.assertEqual("none", result["strategy"])
+        self.assertEqual("not_run", result["baseline_rebuild"])
+        self.assertEqual("not_run", result["reexecution"])
+        self.assertFalse(result["writes_performed"])
+        self.assertIn("真实错误: 无", output)
+        self.assertIn("生产中文源: 无需检查", output)
+        self.assertIn("恢复策略: none", output)
+        self.assertIn("写入操作: 否", output)
+        self.assertIn("下一步: 无", output)
+        self.assertEqual(execution_before,
+                         MODULE._execution_path(self.root, 401).read_bytes())
+        self.assertEqual(state_before, state_path.read_bytes())
+
+    def test_recover_restart_executes_only_selected_article_to_completion(self):
+        state_path, source, _ = self.prepare_source_restart()
+        other_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 402)
+        other_before = other_path.read_bytes()
+        execution_commands = []
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_commands.append(command)
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        result = MODULE.recover(
+            self.root, 401, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("completed", result["baseline_rebuild"])
+        self.assertEqual("completed", result["reexecution"])
+        self.assertEqual("completed", result["final_status"])
+        self.assertEqual(1, len(execution_commands))
+        self.assertIn("401", execution_commands[0])
+        self.assertEqual(other_before, other_path.read_bytes())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["workflow_status"])
 
     def test_restart_from_current_accepts_exact_old_generated_excerpt(self):
         _, source, _ = self.prepare_source_restart(excerpt="旧摘要")

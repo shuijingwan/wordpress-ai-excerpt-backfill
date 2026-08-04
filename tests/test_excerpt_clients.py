@@ -120,7 +120,9 @@ class HttpErrorDiagnosticsTest(unittest.TestCase):
         transport = RecordingTransport(response, status=500)
         with self.assertRaises(HttpJsonError) as raised:
             request_json(transport, "POST", "https://example.invalid", {"Cookie": "cookie"}, {})
-        self.assertEqual("HTTP request failed with status 500", str(raised.exception))
+        self.assertEqual(
+            "HTTP request failed with status 500: server_error: Translation failed",
+            str(raised.exception))
         self.assertEqual(response, raised.exception.response)
         self.assertIsNone(raised.exception.response_excerpt)
 

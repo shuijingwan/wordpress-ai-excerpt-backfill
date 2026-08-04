@@ -71,7 +71,12 @@ def request_json(transport, method, url, headers, payload=None, timeout=60):
         response = _redact(parsed, secrets) if isinstance(parsed, dict) else None
         excerpt = None if response is not None else _plain_response_excerpt(
             text if isinstance(text, str) else "", secrets)
-        raise HttpJsonError(f"HTTP request failed with status {status}",
+        detail = ""
+        if response and response.get("code"):
+            detail = f": {response['code']}"
+            if response.get("message"):
+                detail += f": {response['message']}"
+        raise HttpJsonError(f"HTTP request failed with status {status}{detail}",
                             response=response, response_excerpt=excerpt)
     try:
         value = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)

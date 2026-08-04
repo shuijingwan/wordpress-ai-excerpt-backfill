@@ -52,5 +52,30 @@ class BatchReadonlySshSourceTest(unittest.TestCase):
         self.assertIn("get_post($zh_id)", PHP_TEMPLATE)
         self.assertIn("pll_get_post_translations", PHP_TEMPLATE)
 
+    def test_ssh_255_retries_then_succeeds(self):
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess([], 255, "", "lost")
+            return subprocess.CompletedProcess([], 0, json.dumps(self.response()), "")
+        source = BatchReadonlySshSource.fetch(
+            [{"chinese_post_id": "1", "english_post_id": "2"}],
+            runner=runner, sleeper=lambda seconds: None)
+        self.assertEqual(1, source.get_post(1)["id"])
+        self.assertEqual(2, len(calls))
+
+    def test_ssh_255_exhaustion_reports_unknown_without_state(self):
+        calls = []
+        def runner(*args, **kwargs):
+            calls.append(1)
+            return subprocess.CompletedProcess([], 255, "", "lost")
+        with self.assertRaisesRegex(
+                SafetyError, "production_readonly_unavailable.*change is unknown"):
+            BatchReadonlySshSource.fetch(
+                [{"chinese_post_id": "1", "english_post_id": "2"}],
+                runner=runner, sleeper=lambda seconds: None)
+        self.assertEqual(3, len(calls))
+
 
 if __name__ == "__main__": unittest.main()

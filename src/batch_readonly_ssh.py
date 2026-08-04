@@ -3,6 +3,7 @@
 import base64
 import json
 import subprocess
+import time
 
 from src.candidate_execution import SafetyError
 from src.polylang_ssh import SSH_COMMAND
@@ -86,21 +87,38 @@ class BatchReadonlySshSource:
         return self.relations.get((int(chinese_post_id), int(english_post_id))) or {}
 
     @classmethod
-    def fetch(cls, rows, runner=subprocess.run, timeout=120):
+    def fetch(cls, rows, runner=subprocess.run, timeout=120, max_attempts=3,
+              retry_delay=1, sleeper=time.sleep):
         pairs = [[int(row["chinese_post_id"]), int(row["english_post_id"])] for row in rows]
         payload = base64.b64encode(
             json.dumps(pairs, separators=(",", ":")).encode("ascii")
         ).decode("ascii")
         php = PHP_TEMPLATE % payload
-        try:
-            completed = runner(SSH_COMMAND, input=php, text=True, capture_output=True,
-                               timeout=timeout, check=False, shell=False)
-        except subprocess.TimeoutExpired as error:
-            raise SafetyError("batch read-only SSH query timed out") from error
-        except OSError as error:
-            raise SafetyError(f"batch read-only SSH query failed: {type(error).__name__}") from error
-        if completed.returncode != 0:
-            raise SafetyError(f"batch read-only SSH query exited with {completed.returncode}")
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                completed = runner(
+                    SSH_COMMAND, input=php, text=True, capture_output=True,
+                    timeout=timeout, check=False, shell=False)
+                if completed.returncode == 0:
+                    break
+                if completed.returncode != 255:
+                    raise SafetyError(
+                        f"batch read-only SSH query exited with {completed.returncode}")
+                last_error = SafetyError(
+                    "batch read-only SSH query exited with 255")
+            except subprocess.TimeoutExpired:
+                last_error = SafetyError("batch read-only SSH query timed out")
+            except OSError as error:
+                last_error = SafetyError(
+                    f"batch read-only SSH query failed: {type(error).__name__}")
+            if attempt < max_attempts:
+                sleeper(retry_delay * attempt)
+        else:
+            raise SafetyError(
+                "production_readonly_unavailable: production data was not "
+                "obtained after finite SSH retries; content change is unknown"
+            ) from last_error
         try:
             values = json.loads(completed.stdout)
         except (json.JSONDecodeError, TypeError) as error:
