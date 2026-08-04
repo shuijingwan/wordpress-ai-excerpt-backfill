@@ -1,0 +1,88 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260803-01",
+  "batch_position": 4,
+  "blocked_reasons": [],
+  "chinese_post_id": 7496,
+  "english_post_id": 12728,
+  "execution_evidence": {
+    "sha256": "7b9d758d3e26d0392c10351a1149cf123635fc6cfea96d932ffb45060a750604",
+    "source_file": "data/backups/single-candidate/chinese-7496.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-03T07:46:27.586902+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-03T02:49:40.547717+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-03T07:46:27.586902+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "occurred_at": "2026-08-03T08:01:01.748818+00:00",
+    "reason": "executor_failed_without_state",
+    "returncode": 2,
+    "stage": "run",
+    "stderr_summary": "ERROR: ZHIPU_API_KEY is required\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 1,
+    "confirmed_at": "2026-08-03T07:46:27.586902+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 1
+  },
+  "recovery": {
+    "preserved_failure": {
+      "attempt": 1,
+      "occurred_at": "2026-08-03T08:01:01.748818+00:00",
+      "reason": "executor_failed_without_state",
+      "returncode": 2,
+      "stage": "run",
+      "stderr_summary": "ERROR: ZHIPU_API_KEY is required\n",
+      "stdout_summary": ""
+    },
+    "reason": "no execution, backup, or partial-write evidence; validation valid",
+    "recovered_at": "2026-08-03T08:54:57.362356+00:00",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260803-01.csv",
+  "source_batch_sha256": "286bffb8b8f1fbb495366f42f3a9f9363e4022f6a44f6d11b5d55e1340a90fca",
+  "source_row_sha256": "fb9420077d358aa0b5d965ac1f475f7a3cc8dc3c424e7f1a30b3d582e83102f4",
+  "updated_at": "2026-08-03T09:03:54.261281+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "02e628e2820294643bc52a2b973a802d48c0cb1e3f160410921b55bb335f22a5",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "f9ce4e24b08105540d2b33fb250fd9b6e16ab5bf668f40ff41a50c8df7851809",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260803-01/chinese-7496.csv",
+    "status": "ready",
+    "validated_at": "2026-08-03T07:50:29.870312+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

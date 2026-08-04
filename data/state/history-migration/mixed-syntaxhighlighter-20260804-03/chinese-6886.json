@@ -1,0 +1,119 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260804-03",
+  "batch_position": 1,
+  "blocked_reasons": [],
+  "chinese_post_id": 6886,
+  "english_post_id": 13276,
+  "execution_evidence": {
+    "sha256": "be2d13a8427848dd537a31a88ccd025cbfaa0fe5df74fb27f6b89785d6bfffa8",
+    "source_file": "data/backups/single-candidate/chinese-6886.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-04T13:31:42.295183+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-04T13:30:26.133919+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-04T13:31:42.295183+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "error_summary": "",
+    "occurred_at": "2026-08-04T14:07:22.844667+00:00",
+    "reason": "executor_failed_with_state",
+    "returncode": 2,
+    "stage": "run",
+    "stderr_summary": "ERROR: generated Chinese excerpt contains Markdown or a list\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-1-20260804T140715Z.txt\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-2-20260804T140719Z.txt\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-3-20260804T140722Z.txt\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "run": 2
+  },
+  "manual_conversion": {
+    "cbp_count_after": 10,
+    "confirmed_at": "2026-08-04T13:31:42.295183+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 10
+  },
+  "recovery": {
+    "action": "retry_from_ready",
+    "preserved_failure": {
+      "attempt": 1,
+      "occurred_at": "2026-08-04T13:34:25.469694+00:00",
+      "reason": "executor_failed_without_state",
+      "returncode": 2,
+      "stage": "run",
+      "stderr_summary": "ERROR: read-only Polylang SSH check exited with 255 after 2 attempts\n",
+      "stdout_summary": ""
+    },
+    "reason": "旧预检只读基础设施失败且没有任何执行或写入 evidence",
+    "recovered_at": "2026-08-04T14:06:43.392981+00:00",
+    "status": "applied"
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 0,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260804-03.csv",
+  "source_batch_sha256": "edde0a0bdcc20f273a8a360ba234af8408009215ddfe9adf1d854ca8f161fd3c",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-6886/20260804T150759.792471Z",
+    "expected_pre_run_excerpt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 2,
+      "error_summary": "",
+      "occurred_at": "2026-08-04T14:07:22.844667+00:00",
+      "reason": "executor_failed_with_state",
+      "returncode": 2,
+      "stage": "run",
+      "stderr_summary": "ERROR: generated Chinese excerpt contains Markdown or a list\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-1-20260804T140715Z.txt\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-2-20260804T140719Z.txt\nRejected excerpt saved to: /home/wangqiang/code/wordpress-ai-excerpt-backfill/data/backups/single-candidate/rejected/chinese-6886-glm47-rejected-attempt-3-20260804T140722Z.txt\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "reason": "Regenerate excerpts rejected by the corrected validator",
+    "recovered_at": "2026-08-04T15:07:59.792471+00:00",
+    "recovery_kind": "rejected_excerpt_regeneration",
+    "restart_excerpt_state": "empty",
+    "status": "applied"
+  },
+  "source_row_sha256": "4bb39dc69e3de7103a5d37d77fd02a57ea41305fbe8868a63aa495d224f0258d",
+  "updated_at": "2026-08-04T15:09:12.697931+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "c742c9a793322b888035325500e410c2e03e7ab0864f24e39a23d6e28399666b",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "55543a234f47d87acfab8df232033d4738f08713aedbd202013e8e4302abf0f0",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260804-03/chinese-6886.csv",
+    "status": "ready",
+    "validated_at": "2026-08-04T13:32:08.991338+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

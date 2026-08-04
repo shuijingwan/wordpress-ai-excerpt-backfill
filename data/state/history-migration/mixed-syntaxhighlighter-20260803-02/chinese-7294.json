@@ -1,0 +1,65 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260803-02",
+  "batch_position": 9,
+  "blocked_reasons": [],
+  "chinese_post_id": 7294,
+  "english_post_id": 12915,
+  "execution_evidence": {
+    "sha256": "3c2b5f1f8f73c9bd8d08f5e46630f90881f79293c5e949865d245664e5b19905",
+    "source_file": "data/backups/single-candidate/chinese-7294.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-03T10:52:44.049579+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-03T09:33:09.572520+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-03T10:52:44.049579+00:00",
+    "status": "confirmed"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 3,
+    "confirmed_at": "2026-08-03T10:52:44.049579+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 3
+  },
+  "retry_counts": {
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260803-02.csv",
+  "source_batch_sha256": "cbb8a1d47971e0a3e9dda508fa385c0c05321fb8c906a517f75ef0f7334d75e4",
+  "source_row_sha256": "84b3d72a83c4afca5e187af7f1e00b86fe273eb50b2e50e1b221a525edb4b695",
+  "updated_at": "2026-08-03T11:18:21.602774+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "5e6778ca6c0d7a91749da17901c4b768fa8040e599bfa5dbbe7f4c78680284a6",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "ff2bf93e50ad19d2c89717168d29b66397eb6abff30e99355cf95d3bbbf39f79",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260803-02/chinese-7294.csv",
+    "status": "ready",
+    "validated_at": "2026-08-03T10:54:36.323392+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
