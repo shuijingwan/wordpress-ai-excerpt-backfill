@@ -190,8 +190,22 @@ def validate_generated_excerpt(value, minimum=80, maximum=300):
     )
     if re.search(r"<[^>]+>|\[[A-Za-z/][^\]]*\]", shortcode_text):
         raise ExcerptValidationError("generated Chinese excerpt contains HTML or shortcode markup", value)
+    # PHP magic methods are technical identifiers, not Markdown emphasis.
+    # Mask the complete language-defined names before looking for genuinely
+    # paired emphasis delimiters; a bare ``__`` prefix is never sufficient.
+    markdown_text = re.sub(
+        r"(?i)__(?:construct|destruct|call|callStatic|get|set|isset|unset|"
+        r"sleep|wakeup|serialize|unserialize|toString|invoke|set_state|clone|"
+        r"debugInfo)\b",
+        "PHP_MAGIC_METHOD",
+        text,
+    )
     if (re.search(r"(?m)^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)", text)
-            or re.search(r"[*_]{2}", text)):
+            or re.search(r"\[[^\]\r\n]+\]\([^()\r\n]+\)", text)
+            or re.search(r"\*\*(?=\S).+?(?<=\S)\*\*", markdown_text)
+            or re.search(
+                r"__(?=\S)(?:(?!__).)+?(?<=\S)__(?![A-Za-z0-9_])",
+                markdown_text)):
         raise ExcerptValidationError("generated Chinese excerpt contains Markdown or a list", value)
     return text
 

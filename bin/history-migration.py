@@ -120,7 +120,8 @@ EXECUTION_CANDIDATE_FIELDS = {
     "chinese_post_id", "english_post_id", "chinese_title", "execution_status",
 }
 KNOWN_EXECUTION_STATUSES = {
-    "prepared", "excerpt_rejected", "excerpt_generated", "chinese_excerpt_saved",
+    "prepared", "excerpt_rejected", "rejected_excerpt_generation",
+    "excerpt_generated", "chinese_excerpt_saved",
     "translation_started", "translation_failed", "completed", "failed", "pending",
 }
 DERIVED_SUFFIXES = ("-validation.csv", "-execution-candidates.csv")
@@ -631,6 +632,7 @@ def _workflow_mapping(batch, execution, validation):
             "chinese_excerpt_saved": "ready_for_translation_resume",
             "translation_failed": "translation_failed",
             "excerpt_rejected": "excerpt_failed",
+            "rejected_excerpt_generation": "excerpt_failed",
             "prepared": "blocked",
             "excerpt_generated": "blocked",
             "failed": "blocked",
@@ -1874,6 +1876,7 @@ def plan_run(root):
 EXECUTION_STATUS_MAP = {
     "completed": "completed",
     "excerpt_rejected": "excerpt_failed",
+    "rejected_excerpt_generation": "excerpt_failed",
     "chinese_excerpt_saved": "ready_for_translation_resume",
     "translation_started": "ready_for_translation_resume",
     "translation_failed": "translation_failed",
@@ -1939,6 +1942,13 @@ def _execution_details(root, article):
         "error_response_excerpt": _safe_subprocess_summary(
             value.get("error_response_excerpt", "")),
     }
+
+
+def _normalized_execution_status(status):
+    return ({
+        "excerpt_rejected": "excerpt_rejected",
+        "rejected_excerpt_generation": "excerpt_rejected",
+    }).get(status, status)
 
 
 def _structured_execution_failure(execution):
@@ -2088,6 +2098,13 @@ def _classify_subprocess_failure(completed, phase):
     stderr = _safe_subprocess_summary(getattr(completed, "stderr", ""))
     stdout = _safe_subprocess_summary(getattr(completed, "stdout", ""))
     combined = f"{stderr}\n{stdout}".lower()
+    readonly_markers = (
+        "read-only polylang ssh check exited with 255",
+        "read-only polylang ssh check timed out",
+        "read-only polylang ssh check failed after",
+        "batch read-only ssh query exited with 255",
+        "production_readonly_unavailable",
+    )
     transient_markers = (
         "network request failed", "urlerror", "ssleoferror",
         "unexpected_eof_while_reading", "unexpected eof",
@@ -2100,7 +2117,9 @@ def _classify_subprocess_failure(completed, phase):
         "http error 401", "http error 403", "unauthorized", "forbidden",
         "authentication failed",
     )
-    if any(marker in combined for marker in transient_markers):
+    if any(marker in combined for marker in readonly_markers):
+        category = "production_readonly_unavailable"
+    elif any(marker in combined for marker in transient_markers):
         category = "transient_network_error"
     elif any(marker in combined for marker in authentication_markers):
         category = "authentication_error"
@@ -2284,6 +2303,27 @@ def _restore_ready_after_transient(root, state, attempt, failure):
         state, event)
 
 
+def _record_interrupted_execution(root, state, attempt, artifacts):
+    """Preserve an ambiguous interruption without claiming it is safe to retry."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+    state["last_failure"] = {
+        "stage": "run", "attempt": attempt,
+        "reason": "execution_interrupted_write_status_unknown",
+        "occurred_at": timestamp, "artifacts": artifacts,
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "run_attempt_interrupted", state, "execution_in_progress",
+        "execution_in_progress",
+        "user interrupted execution; write status requires evidence-based recovery",
+        {"stage": "run", "attempt": attempt, "artifacts": artifacts,
+         "write_status": "unknown"}, timestamp,
+        f"run|{attempt}|interrupted|{timestamp}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+
+
 def _select_batch(batches, batch_id):
     if batch_id is None:
         return batches
@@ -2376,17 +2416,25 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                 except (OSError, subprocess.SubprocessError) as error:
                     failure = _exception_failure(error, "preflight")
                     finish(_operation_result(
-                        item, "operation_error", failure["category"],
+                        item, ("production_readonly_unavailable"
+                               if failure["category"] ==
+                               "production_readonly_unavailable"
+                               else "operation_error"), failure["category"],
                         failure["returncode"], _failure_error(failure),
-                        phase="preflight", **_failure_details(failure)))
+                        phase="preflight", production_writes=False,
+                        **_failure_details(failure)))
                     continue
                 if preflight.returncode != 0:
                     failure = _classify_subprocess_failure(
                         preflight, "preflight")
                     finish(_operation_result(
-                        item, "operation_error", failure["category"],
+                        item, ("production_readonly_unavailable"
+                               if failure["category"] ==
+                               "production_readonly_unavailable"
+                               else "operation_error"), failure["category"],
                         failure["returncode"], _failure_error(failure),
-                        phase="preflight", **_failure_details(failure)))
+                        phase="preflight", production_writes=False,
+                        **_failure_details(failure)))
                     continue
                 before = _execution_details(root, fixed[item["post_id"]])
                 attempt = _record_attempt_start(root, state, "run")
@@ -2420,7 +2468,9 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                     failure = _classify_subprocess_failure(completed, "execute")
                     artifacts = _execution_artifacts(root, item["post_id"])
                     if (
-                            failure["category"] == "transient_network_error"
+                            failure["category"] in {
+                                "transient_network_error",
+                                "production_readonly_unavailable"}
                             and not artifacts):
                         _restore_ready_after_transient(
                             root, state, attempt, failure)
@@ -2428,7 +2478,7 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                             item, "operation_error", failure["category"],
                             failure["returncode"], _failure_error(failure),
                             phase="execute", attempt=attempt,
-                            recovered_to_ready=True,
+                            recovered_to_ready=True, production_writes=False,
                             **_failure_details(failure)))
                         continue
                     failure["artifacts"] = artifacts
@@ -2486,6 +2536,27 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                     _record_attempt_outcome(
                         root, state, "run", attempt, result, failure)
                 finish(result)
+            except KeyboardInterrupt:
+                artifacts = _execution_artifacts(root, item["post_id"])
+                if (state and state["workflow_status"] == "execution_in_progress"
+                        and not artifacts):
+                    failure = {
+                        "category": "execution_interrupted_before_write",
+                        "returncode": 130, "stderr_summary": "user interrupted",
+                        "stdout_summary": ""}
+                    _restore_ready_after_transient(root, state, attempt, failure)
+                    recovered = True
+                elif state and state["workflow_status"] == "execution_in_progress":
+                    _record_interrupted_execution(root, state, attempt, artifacts)
+                    recovered = False
+                else:
+                    recovered = True
+                finish(_operation_result(
+                    item, "interrupted", "execution_interrupted", 130,
+                    "user interrupted; child process terminated",
+                    phase="preflight" if attempt is None else "execute",
+                    attempt=attempt, artifacts=artifacts,
+                    recovered_to_ready=recovered, production_writes=False))
             except (OSError, subprocess.SubprocessError, ReadError) as error:
                 if attempt is None:
                     attempt = int((state.get("retry_counts") or {}).get("run", 0))
@@ -2882,6 +2953,13 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
                     "fix the Chinese source if needed, then run recover "
                     f"--post-id {item['post_id']} --execute")
                 break
+            if final.get("category") in {
+                    "production_readonly_unavailable", "execution_interrupted"}:
+                final["next_step"] = (
+                    "rerun the same run-ready --execute command later"
+                    if final["category"] == "production_readonly_unavailable"
+                    else "run recover for this post before continuing")
+                break
             if progress:
                 progress("attempt_failed", index, total, item, final)
             if article_attempt == max_attempts:
@@ -2898,15 +2976,31 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
                 "finish" if final["result"] == "completed" else "final_failed",
                 index, total, item, final)
             if final["result"] != "completed" and index < total:
-                progress("continue", index, total, item, final)
+                if final.get("category") not in {
+                        "production_readonly_unavailable", "execution_interrupted"}:
+                    progress("continue", index, total, item, final)
+        if final.get("category") in {
+                "production_readonly_unavailable", "execution_interrupted"}:
+            break
     completed_count = sum(item["result"] == "completed" for item in results)
     failed_count = sum(item["result"] != "completed" for item in results)
+    stopped_early = len(results) < total
+    infrastructure_unavailable = bool(results and results[-1].get("category") ==
+                                      "production_readonly_unavailable")
+    interrupted = bool(results and results[-1].get("category") ==
+                       "execution_interrupted")
     return {
         "schema_version": SCHEMA_VERSION, "mode": "execute",
         "repository_root": str(root), "selected_count": len(items),
         "results": results, "completed_count": completed_count,
-        "failed_count": failed_count, "pending_count": 0,
-        "writes_performed": bool(items), "integrity_ok": True,
+        "failed_count": failed_count, "pending_count": total - len(results),
+        "processed_count": len(results), "stopped_early": stopped_early,
+        "production_readonly_unavailable": infrastructure_unavailable,
+        "interrupted": interrupted,
+        "writes_performed": any(item.get("production_writes", True)
+                                for item in results),
+        "integrity_ok": not (infrastructure_unavailable or interrupted),
+        "exit_code": EXIT_WRITE_ERROR,
     }
 
 
@@ -3270,7 +3364,7 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
             (prewrite.get("english_post_id"), "pre-write English", article["english_post_id"])):
         if value != expected:
             reasons.append(f"{name} post ID mismatch")
-    execution_status = execution.get("status")
+    execution_status = _normalized_execution_status(execution.get("status"))
     if execution_status == "translation_failed":
         recovery_kind = "source_changed_after_translation_failure"
         allowed_workflow_statuses = {"blocked", "translation_failed"}
@@ -3365,6 +3459,10 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         or live["chinese_content_sha256"] != old_hashes.get("chinese_content")
     )
     if recovery_kind == "rejected_excerpt_regeneration":
+        checks["chinese_title_unchanged"] = (
+            current_title_sha == old_hashes.get("chinese_title"))
+        checks["chinese_content_unchanged"] = (
+            live["chinese_content_sha256"] == old_hashes.get("chinese_content"))
         checks["old_generated_excerpt_absent"] = not old_generated_nonempty
         checks["rejected_excerpt_evidence_complete"] = bool(
             rejected_evidence) and len(rejected_evidence) == len(
@@ -3569,19 +3667,105 @@ def recover(root, post_id, execute=False, source_factory=None,
             "reexecution": "not_run", "final_status": "completed",
             "writes_performed": False, "integrity_ok": True,
         }
+    artifacts = _execution_artifacts(root, post_id)
+    failure = state.get("last_failure") or {}
+    failure_text = "\n".join(str(failure.get(key, "")) for key in (
+        "reason", "stderr_summary", "stdout_summary"))
+    failure_category = _classify_subprocess_failure(type("Failure", (), {
+        "returncode": failure.get("returncode", -1),
+        "stderr": failure_text, "stdout": ""})(), "preflight")["category"]
+    safe_old_readonly_failure = bool(
+        state["workflow_status"] == "blocked"
+        and failure_category == "production_readonly_unavailable"
+        and not artifacts)
+    safe_orphaned_start = bool(
+        state["workflow_status"] == "execution_in_progress"
+        and not artifacts)
+    if safe_old_readonly_failure or safe_orphaned_start:
+        actual_error = (
+            "production_readonly_unavailable" if safe_old_readonly_failure
+            else "execution_interrupted_before_write")
+        reason = (
+            "旧预检只读基础设施失败且没有任何执行或写入 evidence"
+            if safe_old_readonly_failure else
+            "执行中断但没有 execution/pre-write evidence，可证明尚未进入写入流程")
+        base = {
+            "schema_version": SCHEMA_VERSION,
+            "mode": "execute" if execute else "preview",
+            "repository_root": str(root), "batch_id": state["batch_id"],
+            "post_id": int(post_id),
+            "english_post_id": article["english_post_id"],
+            "current_status": state["workflow_status"],
+            "actual_error": actual_error,
+            "execution_evidence": _relative(_execution_path(root, post_id), root),
+            "production_source": "not_required", "strategy": "retry_from_ready",
+            "strategy_reasons": [reason],
+            "will_execute": "retry_from_ready -> execute_single_candidate",
+            "baseline_rebuild": "not_required", "reexecution": "not_run",
+            "final_status": state["workflow_status"],
+            "writes_performed": False, "integrity_ok": True,
+        }
+        if not execute:
+            return base
+        with InitLock(root):
+            _, _, fixed_locked, _, states_locked = _context(root)
+            current_state = states_locked[int(post_id)]
+            if _execution_artifacts(root, post_id):
+                return {**base, "strategy": "blocked",
+                        "strategy_reasons": [
+                            "execution or write evidence appeared during recovery"]}
+            timestamp = datetime.now(timezone.utc).isoformat()
+            previous = current_state["workflow_status"]
+            current_state["workflow_status"] = "ready_for_execution"
+            current_state["recovery"] = {
+                "status": "applied", "action": "retry_from_ready",
+                "recovered_at": timestamp, "preserved_failure": failure,
+                "reason": reason}
+            current_state["updated_at"] = timestamp
+            event = _transition_event(
+                "prewrite_interruption_recovered", current_state, previous,
+                "ready_for_execution", reason,
+                {"artifacts": [], "preserved_failure": failure}, timestamp,
+                f"retry-ready|{post_id}|{timestamp}")
+            _persist_transition(
+                root, _state_path(root, current_state["batch_id"], int(post_id)),
+                current_state, event)
+        operation = _run_ready_once(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner,
+            max_run_attempts=int((state.get("retry_counts") or {}).get(
+                "run", 0)) + 1)
+        item = operation["results"][0] if operation.get("results") else None
+        _, _, _, _, fresh_states = _context(root)
+        final_status = fresh_states[int(post_id)]["workflow_status"]
+        return {**base, "reexecution": (
+                    "completed" if item and item["result"] == "completed"
+                    else "failed"), "final_status": final_status,
+                "operation_result": item,
+                "next_step": _recover_next_step(final_status, post_id),
+                "writes_performed": True}
     root, article, state, execution, prewrite, current, reasons = (
         _restart_from_current_plan(root, post_id, source_factory))
     unavailable = any("production_readonly_unavailable" in reason
                       for reason in reasons)
     source_changed = bool(
         current and current["checks"].get("chinese_source_changed"))
-    execution_status = execution.get("status") if execution else None
+    execution_status = _normalized_execution_status(
+        execution.get("status")) if execution else None
     strategy = "blocked"
     strategy_reasons = list(reasons)
     if unavailable:
         strategy_reasons = [
             "production_readonly_unavailable: production data was not "
             "obtained; cannot determine whether Chinese content changed"]
+    elif (state["workflow_status"] == "excerpt_failed"
+          and execution_status == "excerpt_rejected"
+          and current
+          and current.get("recovery_kind") == "rejected_excerpt_regeneration"
+          and not reasons):
+        strategy = "rejected_excerpt_regeneration"
+        strategy_reasons = [
+            "已有中文摘要连续生成失败，生产中文源及英文源仍与 pre-write 基线一致"]
     elif execution_status in {
             "chinese_excerpt_saved", "translation_started",
             "translation_failed"} and not source_changed:
@@ -3604,13 +3788,18 @@ def recover(root, post_id, execute=False, source_factory=None,
         "repository_root": str(root), "batch_id": state["batch_id"],
         "post_id": int(post_id), "english_post_id": article["english_post_id"],
         "current_status": state["workflow_status"],
-        "actual_error": (_structured_execution_failure(
-            _execution_details(root, article)) or {}).get("category", "unknown"),
+        "actual_error": ("rejected_excerpt_generation"
+                         if strategy == "rejected_excerpt_regeneration" else
+                         (_structured_execution_failure(
+                             _execution_details(root, article)) or {}).get(
+                                 "category", "unknown")),
         "execution_evidence": evidence_path,
         "production_source": (
             "unknown" if unavailable else "changed" if source_changed else "unchanged"),
         "strategy": strategy, "strategy_reasons": strategy_reasons,
         "will_execute": (
+            "重新生成中文摘要，并继续安全执行"
+            if strategy == "rejected_excerpt_regeneration" else
             f"{strategy} -> execute_single_candidate"
             if strategy != "blocked" else "blocked"),
         "baseline_rebuild": "not_run", "reexecution": "not_run",
@@ -3619,7 +3808,7 @@ def recover(root, post_id, execute=False, source_factory=None,
     }
     if not execute or strategy == "blocked":
         return result
-    if strategy == "restart_from_current":
+    if strategy in {"restart_from_current", "rejected_excerpt_regeneration"}:
         restarted = restart_from_current(
             root, post_id, apply=True, source_factory=source_factory)
         if not restarted["eligible"] or not restarted["changed"]:
@@ -3639,7 +3828,20 @@ def recover(root, post_id, execute=False, source_factory=None,
     return {**result, "reexecution": (
                 "completed" if item and item["result"] == "completed" else "failed"),
             "final_status": final_status, "operation_result": item,
+            "next_step": _recover_next_step(final_status, post_id),
             "writes_performed": True}
+
+
+def _recover_next_step(final_status, post_id):
+    if final_status == "completed":
+        return "无"
+    if final_status == "excerpt_failed":
+        return (
+            "检查 rejected excerpt evidence；确认摘要校验问题后重新运行 "
+            f"recover --post-id {int(post_id)}")
+    if final_status == "ready_for_execution":
+        return "生产连接恢复后重新运行同一条 recover --execute 命令"
+    return f"根据当前状态 {final_status} 重新运行 recover --post-id {int(post_id)}"
 
 
 SUMMARY_KEYS = (
@@ -3908,7 +4110,8 @@ def render_operation_text(result):
     ]
     for field in (
             "workflow_status", "selected_count", "allowed_count",
-            "planned_count", "changed_count"):
+            "planned_count", "changed_count", "processed_count",
+            "pending_count", "stopped_early"):
         if field in result:
             lines.append(f"{field}: {result[field]}")
     if "items" in result:
@@ -3951,7 +4154,9 @@ def render_recover_text(result):
     error_labels = {"none": "无"}
     strategy_labels = {
         "restart_from_current": "restart_from_current",
-        "resume": "resume", "blocked": "blocked", "none": "none"}
+        "rejected_excerpt_regeneration": "rejected_excerpt_regeneration",
+        "resume": "resume", "retry_from_ready": "retry_from_ready",
+        "blocked": "blocked", "none": "none"}
     lines = [
         f"模式: {result['mode']}",
         f"文章: zh={result['post_id']} en={result['english_post_id']}",
@@ -3972,16 +4177,18 @@ def render_recover_text(result):
         lines.extend([
             f"将执行: {result['will_execute']}",
             "写入操作: 否",
+            "原因: " + "; ".join(result["strategy_reasons"]),
         ])
     else:
         lines.extend([
             f"基线重建: {result['baseline_rebuild']}",
             f"重新执行: {result['reexecution']}",
             f"最终状态: {result['final_status']}",
-            "下一步: " + ("无" if result["final_status"] == "completed" else
-                          "; ".join(result["strategy_reasons"])),
+            "下一步: " + result.get(
+                "next_step", "无" if result["final_status"] == "completed"
+                else "; ".join(result["strategy_reasons"])),
         ])
-    if result["strategy"] == "blocked":
+    if result["strategy"] == "blocked" and result["mode"] != "preview":
         lines.append("原因: " + "; ".join(result["strategy_reasons"]))
     return "\n".join(lines)
 

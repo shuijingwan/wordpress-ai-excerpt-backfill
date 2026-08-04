@@ -2115,6 +2115,104 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual("ready_for_execution", state["workflow_status"])
         self.assertEqual({}, state["retry_counts"])
 
+    def test_nested_readonly_255_stops_batch_without_outer_retry_or_state_write(self):
+        self.prepare_converted()
+        MODULE.mark_converted(self.root, 402, 1, 1, True)
+        for post_id in (401, 402):
+            path = self.write_record_validation(
+                chinese=post_id, english=post_id + 1000)
+            unique = path.with_name(f"readonly-{post_id}.csv")
+            path.replace(unique)
+            MODULE.record_validation(
+                self.root, post_id, str(unique.relative_to(self.root)))
+            self.create_execution_manifest(post_id)
+        calls = []
+        nested = {"preflight_passed": False, "request_counts": {
+            "wordpress_get": 2, "ssh_readonly": 1, "post": 0,
+            "glm": 0, "translation": 0}, "polylang_check": {
+                "error": "read-only Polylang SSH check exited with 255 after 2 attempts"}}
+        def runner(command, **kwargs):
+            calls.append(command)
+            return mock.Mock(returncode=1, stdout=json.dumps(nested), stderr="")
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            sleeper=lambda seconds: self.fail("outer retry is forbidden"))
+        self.assertEqual(1, len(calls))
+        self.assertEqual("production_readonly_unavailable",
+                         result["results"][0]["category"])
+        self.assertEqual(1, result["processed_count"])
+        self.assertEqual(1, result["pending_count"])
+        self.assertTrue(result["stopped_early"])
+        self.assertFalse(result["integrity_ok"])
+        for post_id in (401, 402):
+            state = json.loads(MODULE._state_path(
+                self.root, "syntaxhighlighter-20260723-01", post_id
+            ).read_text(encoding="utf-8"))
+            self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertFalse(result["writes_performed"])
+
+    def test_direct_readonly_255_after_attempt_recovers_ready_without_blocking(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            return mock.Mock(returncode=2, stdout="", stderr=
+                "ERROR: read-only Polylang SSH check exited with 255 after 2 attempts")
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            sleeper=lambda seconds: self.fail("outer retry is forbidden"))
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual(2, len(calls))
+        self.assertEqual("production_readonly_unavailable",
+                         result["results"][0]["category"])
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertFalse(MODULE._execution_path(self.root, 401).exists())
+        self.assertFalse(MODULE._prewrite_path(self.root, 401).exists())
+
+    def test_keyboard_interrupt_before_write_recovers_ready_and_stops(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            raise KeyboardInterrupt()
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("execution_interrupted",
+                         result["results"][0]["category"])
+        self.assertTrue(result["results"][0]["recovered_to_ready"])
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+
+    def test_keyboard_interrupt_with_artifact_preserves_in_progress_evidence(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            MODULE._prewrite_path(self.root, 401).write_text("{}", encoding="utf-8")
+            raise KeyboardInterrupt()
+        result = MODULE.run_ready(self.root, execute=True, runner=runner)
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertFalse(result["results"][0]["recovered_to_ready"])
+        self.assertEqual("execution_in_progress", state["workflow_status"])
+        self.assertEqual("execution_interrupted_write_status_unknown",
+                         state["last_failure"]["reason"])
+
     def test_non_network_preflight_exit_is_not_transient(self):
         failure = MODULE._classify_subprocess_failure(
             mock.Mock(returncode=1, stderr="manifest rejected", stdout=""),
@@ -2404,6 +2502,71 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertFalse(result["writes_performed"])
         self.assertEqual(before, self.snapshot())
 
+    def test_recover_old_readonly_blocked_uses_retry_from_ready(self):
+        state_path = self.prepare_blocked_run()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["last_failure"].update({
+            "reason": "executor_failed_without_state",
+            "stderr_summary":
+                "read-only Polylang SSH check exited with 255 after 2 attempts"})
+        MODULE._atomic_write_json(state_path, state)
+        before = self.snapshot()
+        preview = MODULE.recover(
+            self.root, 401,
+            source_factory=mock.Mock(side_effect=AssertionError(
+                "pre-write readonly failure does not need production query")))
+        self.assertEqual("retry_from_ready", preview["strategy"])
+        self.assertEqual("production_readonly_unavailable",
+                         preview["actual_error"])
+        self.assertEqual(before, self.snapshot())
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        executed = MODULE.recover(self.root, 401, execute=True, runner=runner)
+        self.assertEqual("completed", executed["final_status"])
+        self.assertEqual("completed", executed["reexecution"])
+
+    def test_recover_execute_next_step_uses_new_excerpt_failed_status(self):
+        state_path = self.prepare_blocked_run()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["last_failure"].update({
+            "reason": "executor_failed_without_state",
+            "stderr_summary":
+                "read-only Polylang SSH check exited with 255 after 2 attempts"})
+        MODULE._atomic_write_json(state_path, state)
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "excerpt_rejected")
+            return mock.Mock(
+                returncode=2, stdout="",
+                stderr="generated Chinese excerpt contains Markdown or a list")
+        result = MODULE.recover(self.root, 401, execute=True, runner=runner)
+        output = MODULE.render_recover_text(result)
+        next_line = next(line for line in output.splitlines()
+                         if line.startswith("下一步:"))
+        self.assertEqual("excerpt_failed", result["final_status"])
+        self.assertIn("rejected excerpt evidence", next_line)
+        self.assertNotIn("production_readonly_unavailable", next_line)
+
+    def test_recover_orphaned_in_progress_without_artifacts_is_retry_from_ready(self):
+        state_path = self.prepare_blocked_run()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "execution_in_progress"
+        state["last_failure"] = None
+        MODULE._atomic_write_json(state_path, state)
+        before = self.snapshot()
+        result = MODULE.recover(
+            self.root, 401,
+            source_factory=mock.Mock(side_effect=AssertionError(
+                "artifact-free orphan does not need production query")))
+        self.assertEqual("retry_from_ready", result["strategy"])
+        self.assertEqual("execution_interrupted_before_write",
+                         result["actual_error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_recover_completed_execute_skips_every_action_and_renders_noop(self):
         state_path, _, _ = self.prepare_source_restart()
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -2553,6 +2716,91 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             result["excerpt_observation"]["recovery_kind"])
         self.assertEqual(before, self.snapshot())
 
+    def test_recover_excerpt_rejected_preview_selects_regeneration(self):
+        _, source, _, _ = self.prepare_rejected_restart()
+        before = self.snapshot()
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        output = MODULE.render_recover_text(result)
+        self.assertEqual("rejected_excerpt_generation", result["actual_error"])
+        self.assertEqual("rejected_excerpt_regeneration", result["strategy"])
+        self.assertEqual("unchanged", result["production_source"])
+        self.assertNotIn("unknown", output)
+        self.assertNotIn("恢复策略: blocked", output)
+        self.assertIn("重新生成中文摘要，并继续安全执行", output)
+        self.assertIn("生产中文源及英文源仍与 pre-write 基线一致", output)
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_recover_accepts_legacy_rejected_excerpt_generation_status(self):
+        _, source, _, _ = self.prepare_rejected_restart()
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution["status"] = "rejected_excerpt_generation"
+        MODULE._atomic_write_json(execution_path, execution)
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("rejected_excerpt_regeneration", result["strategy"])
+        self.assertEqual("rejected_excerpt_generation", result["actual_error"])
+
+    def test_recover_excerpt_rejected_rejects_source_or_evidence_drift(self):
+        _, source, _, _ = self.prepare_rejected_restart()
+        changed_chinese, _, _ = self.restart_source(
+            chinese_title="生产标题已变化")
+        changed_english, _, _ = self.restart_source(
+            english_content="production English changed")
+        for changed, expected in (
+                (changed_chinese, "chinese_title_unchanged"),
+                (changed_english, "english_content_unchanged")):
+            with self.subTest(expected=expected):
+                result = MODULE.recover(
+                    self.root, 401, source_factory=lambda rows, s=changed: s)
+                self.assertEqual("blocked", result["strategy"])
+                self.assertIn(expected, result["strategy_reasons"])
+        execution = json.loads(MODULE._execution_path(
+            self.root, 401).read_text(encoding="utf-8"))
+        Path(execution["rejected_excerpt_paths"][0]).unlink()
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertTrue(any("invalid rejected excerpt evidence" in reason
+                            for reason in result["strategy_reasons"]))
+
+    def test_recover_excerpt_rejected_execute_completes_and_archives_evidence(self):
+        _, source, _, rejected_paths = self.prepare_rejected_restart()
+        old_hashes = {Path(path).name: MODULE._file_sha256(Path(path))
+                      for path in rejected_paths}
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        result = MODULE.recover(
+            self.root, 401, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("completed", result["final_status"])
+        archive = next((self.root / MODULE.RESTART_ARCHIVE_ROOT /
+                        "chinese-401").iterdir())
+        audit = json.loads((archive / "recovery.json").read_text(encoding="utf-8"))
+        self.assertEqual(3, len(audit["rejected_excerpt_evidence"]))
+        for evidence in audit["rejected_excerpt_evidence"]:
+            self.assertEqual(old_hashes[Path(evidence["source_path"]).name],
+                             evidence["archive_sha256"])
+
+    def test_recover_excerpt_rejected_execute_can_return_to_excerpt_failed(self):
+        _, source, _, _ = self.prepare_rejected_restart()
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "excerpt_rejected")
+            return mock.Mock(returncode=2, stdout="", stderr=
+                "generated Chinese excerpt contains Markdown or a list")
+        result = MODULE.recover(
+            self.root, 401, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("excerpt_failed", result["final_status"])
+        self.assertIn("rejected excerpt evidence", result["next_step"])
+
     def test_excerpt_rejected_restart_apply_archives_all_evidence(self):
         state_path, source, _, rejected_paths = self.prepare_rejected_restart()
         originals = {
@@ -2587,7 +2835,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("--recovery-restart", MODULE._executor_command(
             self.root, state, preflight=True))
 
-    def test_excerpt_rejected_restart_accepts_modified_chinese_source(self):
+    def test_excerpt_rejected_restart_rejects_modified_chinese_source(self):
         state_path, source, _, _ = self.prepare_rejected_restart()
         prewrite_path = MODULE._prewrite_path(self.root, 401)
         prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
@@ -2597,12 +2845,10 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         preview = MODULE.restart_from_current(
             self.root, 401, source_factory=lambda rows: source)
-        self.assertTrue(preview["eligible"], preview["blocking_reasons"])
-        applied = MODULE.restart_from_current(
-            self.root, 401, apply=True, source_factory=lambda rows: source)
-        self.assertTrue(applied["changed"])
+        self.assertFalse(preview["eligible"])
+        self.assertIn("chinese_title_unchanged", preview["blocking_reasons"])
         state = json.loads(state_path.read_text(encoding="utf-8"))
-        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual("excerpt_failed", state["workflow_status"])
 
     def test_excerpt_rejected_restart_fails_closed_on_excerpt_or_english_drift(self):
         state_path, source, _, _ = self.prepare_rejected_restart()

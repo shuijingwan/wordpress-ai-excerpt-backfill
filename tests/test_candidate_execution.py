@@ -154,6 +154,29 @@ class SafetyBoundaryTest(unittest.TestCase):
         raw = "这篇文章介绍一个具体技术问题的背景和排查过程，说明关键操作步骤、实施条件及其原因，并依据实际执行结果总结解决方案和注意事项，同时准确保留相关产品与技术名称，避免加入原文没有提及的判断，可直接作为中文摘要保存。"
         self.assertEqual(raw, validate_generated_excerpt(raw))
 
+    def test_real_php_magic_method_excerpt_is_plain_text(self):
+        raw = (
+            "本文记录了在 Lighthouse 中排查 resolver 类方法 __invoke 未执行的过程。"
+            "通过打印日志、调整 GraphQL 架构定义和拆分文件，确认问题与解析类无关。"
+            "分析调用栈发现构造方法正常执行，但 __invoke 未调用。对比正常工作的 "
+            "resolver 类并删除该类 __invoke 方法中的 yield 循环后，方法成功执行，"
+            "最终确认问题由 yield 循环导致。")
+        self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_php_magic_method_identifiers_are_not_markdown(self):
+        raw = (
+            "文章比较 __construct、__invoke、__toString、__callStatic 和 "
+            "__debugInfo 等 PHP 魔术方法的调用时机，并说明如何通过日志确认对象构造、"
+            "动态调用和字符串转换流程，最终根据实际调用栈定位实现中的控制流问题。")
+        self.assertEqual(raw, validate_generated_excerpt(raw))
+
+    def test_paired_markdown_emphasis_remains_rejected(self):
+        body = "这是一段足够长的普通中文技术摘要，用于说明问题背景、排查过程、修改方法和最终验证结果。"
+        for emphasized in ("**加粗文本**", "__加粗文本__"):
+            with self.subTest(emphasized=emphasized), self.assertRaisesRegex(
+                    ExcerptValidationError, "Markdown or a list"):
+                validate_generated_excerpt(body + emphasized, minimum=1)
+
     def test_sqlstate_codes_are_not_treated_as_shortcodes(self):
         cases = (
             "在 Laravel 9 中执行迁移时遇到 SQLSTATE[HY000] 错误。",
