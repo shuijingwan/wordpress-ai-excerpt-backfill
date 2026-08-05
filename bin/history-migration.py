@@ -1941,6 +1941,14 @@ def _execution_details(root, article):
         "error_response": error_response,
         "error_response_excerpt": _safe_subprocess_summary(
             value.get("error_response_excerpt", "")),
+        "excerpt_generation_attempts": (
+            value.get("excerpt_generation_attempts")
+            if isinstance(value.get("excerpt_generation_attempts"), int)
+            else value.get("attempts")
+            if status in {"excerpt_rejected", "rejected_excerpt_generation"}
+            and isinstance(value.get("attempts"), int)
+            else None
+        ),
     }
 
 
@@ -2945,6 +2953,17 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
                         f"{mode} attempt was not eligible")
                 final["attempts"] = article_attempt
             if final["result"] == "completed":
+                break
+            if final["result"] in {
+                    "excerpt_rejected", "rejected_excerpt_generation"}:
+                final["candidate_attempts"] = article_attempt
+                execution = _execution_details(root, {
+                    "chinese_post_id": item["post_id"],
+                    "english_post_id": item["english_post_id"],
+                })
+                if execution and execution.get("excerpt_generation_attempts") is not None:
+                    final["excerpt_generation_attempts"] = execution[
+                        "excerpt_generation_attempts"]
                 break
             if final.get("category") == "protected_token_validation_error":
                 final["execution_evidence"] = _relative(
@@ -4221,11 +4240,15 @@ def render_run_progress(kind, index, total, item, result):
     if kind == "finish":
         return (
             f"{prefix} 处理完成：zh={item['post_id']} "
-            f"attempts={result.get('attempts', 1)} result=completed"
+            f"candidate_attempts={result.get('attempts', 1)} result=completed"
         )
+    attempt_summary = f"candidate_attempts={result.get('candidate_attempts', result['attempts'])}"
+    if result.get("excerpt_generation_attempts") is not None:
+        attempt_summary += (
+            f" excerpt_generation_attempts={result['excerpt_generation_attempts']}")
     return (
         f"{prefix} 最终失败：zh={item['post_id']} "
-        f"attempts={result['attempts']} result={result['result']} "
+        f"{attempt_summary} result={result['result']} "
         f"error={_safe_subprocess_summary(result['error'])}"
     )
 

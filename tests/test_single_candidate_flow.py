@@ -459,8 +459,12 @@ class SingleCandidateFlowTest(unittest.TestCase):
                 self.assertEqual(0o700, path.parent.stat().st_mode & 0o777)
             state_path = Path(directory) / "chinese-1.execution.json"
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual({"status", "chinese_post_id", "english_post_id", "error",
-                              "attempts", "rejected_excerpt_paths"}, set(state))
+            self.assertEqual({
+                "status", "chinese_post_id", "english_post_id", "error",
+                "attempts", "excerpt_generation_attempts",
+                "rejected_excerpt_paths",
+            }, set(state))
+            self.assertEqual(3, state["excerpt_generation_attempts"])
             self.assertEqual("excerpt_rejected", state["status"])
             self.assertEqual(3, state["attempts"])
             self.assertNotIn(RejectedGlm.RAW, state_path.read_text(encoding="utf-8"))

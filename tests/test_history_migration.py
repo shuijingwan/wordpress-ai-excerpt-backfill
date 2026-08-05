@@ -1408,6 +1408,40 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertNotIn("--resume", execution_commands[0])
         self.assertIn("--resume", execution_commands[1])
 
+    def test_run_ready_does_not_retry_exhausted_excerpt_generation(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        executions = 0
+        waits = []
+        progress = []
+
+        def runner(command, **kwargs):
+            nonlocal executions
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            executions += 1
+            execution_path = self.write_execution(401, 1401, "excerpt_rejected")
+            value = json.loads(execution_path.read_text(encoding="utf-8"))
+            value["excerpt_generation_attempts"] = 3
+            MODULE._atomic_write_json(execution_path, value)
+            return mock.Mock(returncode=2, stdout="", stderr="excerpt rejected")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner, sleeper=waits.append,
+            progress=lambda *values: progress.append(values))
+        item = result["results"][0]
+        self.assertEqual(1, executions)
+        self.assertEqual([], waits)
+        self.assertEqual(1, item["candidate_attempts"])
+        self.assertEqual(3, item["excerpt_generation_attempts"])
+        rendered = [MODULE.render_run_progress(*values) for values in progress]
+        self.assertFalse(any("第 2/3 次尝试" in line for line in rendered))
+        self.assertTrue(any(
+            "candidate_attempts=1 excerpt_generation_attempts=3" in line
+            for line in rendered))
+
     def test_token_validation_failure_is_classified_and_not_retried(self):
         self.prepare_converted()
         path = self.write_record_validation()

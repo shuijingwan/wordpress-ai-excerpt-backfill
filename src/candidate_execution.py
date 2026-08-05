@@ -168,6 +168,54 @@ def authorize_live_selection(manifest_rows, requested_ids, batch_authorized=Fals
     return requested
 
 
+_WORDPRESS_SHORTCODE_NAMES = {
+    "audio", "caption", "contact-form-7", "embed", "gallery", "playlist",
+    "shortcode", "video", "wp_caption",
+}
+_HTML_TAG_NAMES = {
+    "a", "abbr", "article", "aside", "b", "blockquote", "br", "button",
+    "code", "dd", "del", "details", "div", "dl", "dt", "em", "figcaption",
+    "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header",
+    "hr", "i", "img", "ins", "kbd", "li", "main", "mark", "nav", "ol",
+    "p", "pre", "q", "s", "section", "small", "span", "strong", "sub",
+    "summary", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
+    "tr", "u", "ul",
+}
+
+
+def _contains_html(text):
+    tag_names = "|".join(sorted(_HTML_TAG_NAMES, key=len, reverse=True))
+    return bool(re.search(
+        rf"(?is)</?(?:{tag_names})(?=[\s/>])(?:\s+[^<>]*?)?/?>",
+        text,
+    ))
+
+
+def _contains_wordpress_shortcode(text):
+    token_pattern = re.compile(
+        r"\[(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9_-]*)"
+        r"(?P<body>(?:\s+[^\]\r\n]*)?)(?P<self_closing>/)?\]"
+    )
+    tokens = list(token_pattern.finditer(text))
+    opening_names = set()
+    closing_names = set()
+    for match in tokens:
+        name = match.group("name")
+        lowered = name.lower()
+        if match.group("closing"):
+            closing_names.add(lowered)
+            continue
+        opening_names.add(lowered)
+        body = match.group("body") or ""
+        if (lowered in _WORDPRESS_SHORTCODE_NAMES
+                or match.group("self_closing")
+                or re.search(r"\s+[A-Za-z_][\w-]*\s*=", body)
+                or (name == lowered and match.start() == 0)
+                or (name == lowered and not text[match.start() - 1].isalnum())):
+            return True
+    return bool(opening_names & closing_names or closing_names)
+
+
 def validate_generated_excerpt(value, minimum=80, maximum=300):
     if not isinstance(value, str) or not value.strip():
         raise ExcerptValidationError("generated Chinese excerpt is empty",
@@ -180,15 +228,14 @@ def validate_generated_excerpt(value, minimum=80, maximum=300):
     forbidden = ("<!--", "-->", "```", "[/", "http://", "https://")
     if any(token in text.lower() for token in forbidden):
         raise ExcerptValidationError("generated Chinese excerpt contains forbidden markup or payload", value)
-    # SQLSTATE class/subclass codes are technical identifiers, not WordPress
-    # shortcodes.  Mask only a complete five-character code in an explicit
-    # SQLSTATE context before applying the existing generic shortcode rule.
-    shortcode_text = re.sub(
-        r"(?i)\bSQLSTATE[ \t]*\[[A-Z0-9]{5}\]",
-        "SQLSTATE_CODE",
-        text,
+    sqlstate_text = re.sub(
+        r"(?i)\bSQLSTATE[ \t]*\[[A-Z0-9]{5}\]", "SQLSTATE_CODE", text)
+    invalid_sqlstate_brackets = bool(
+        re.search(r"(?i)\bSQLSTATE[ \t]*\[[^\]\r\n]*\]", sqlstate_text)
+        or re.search(r"(?<![A-Za-z0-9_])\[[A-Z0-9-]{5,6}\]", sqlstate_text)
     )
-    if re.search(r"<[^>]+>|\[[A-Za-z/][^\]]*\]", shortcode_text):
+    if (invalid_sqlstate_brackets or _contains_html(text)
+            or _contains_wordpress_shortcode(text)):
         raise ExcerptValidationError("generated Chinese excerpt contains HTML or shortcode markup", value)
     # PHP magic methods are technical identifiers, not Markdown emphasis.
     # Mask the complete language-defined names before looking for genuinely

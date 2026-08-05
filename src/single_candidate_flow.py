@@ -353,7 +353,9 @@ class SingleCandidateFlow:
                         rejected_state = {
                             "status": "excerpt_rejected", "chinese_post_id": zh_id,
                             "english_post_id": en_id, "error": str(error),
-                            "attempts": attempt, "rejected_excerpt_paths": rejected_paths,
+                            "attempts": attempt,
+                            "excerpt_generation_attempts": attempt,
+                            "rejected_excerpt_paths": rejected_paths,
                         }
                         write_execution_state(state_path, rejected_state)
                         error.rejected_excerpt_paths = list(rejected_paths)

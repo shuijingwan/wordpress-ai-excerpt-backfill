@@ -21,6 +21,13 @@ POST_8669_REJECTED_EXCERPT = (
     "操作成功且不再报错。"
 )
 
+POST_6373_REJECTED_EXCERPT = (
+    "针对 Laravel 6 结合 Lighthouse 使用时报错 TypeRegistry::get() 参数类型错误的问题，本文记录了排查过程。"
+    "通过打印堆栈与变量，定位到 GraphQL schema 定义与代码实际返回类型不一致，导致接收到数组而非字符串。"
+    "经过对比正确与错误的字段实现，发现 theme_setting.graphql 文件中定义的类型错误，将其修改为正确的 "
+    "[ThemeStyleSetting!]! 后，请求恢复正常。"
+)
+
 
 def digest(value="x"):
     return hashlib.sha256(value.encode()).hexdigest()
@@ -202,11 +209,38 @@ class SafetyBoundaryTest(unittest.TestCase):
             '[caption id="attachment_123"]图片[/caption]',
             '[gallery ids="1,2,3"]',
             '正文包含 [custom_shortcode]。',
+            '[gallery]',
+            '[gallery /]',
+            '[caption id="123"]',
+            '[video src="example.mp4"]',
+            '[contact-form-7 id="123" title="联系表单"]',
+            '正文包含 [caption]图片[/caption]。',
+            '正文包含 [/caption]。',
             '错误代码为 <code>SQLSTATE[HY000]</code>。',
+            '<p>摘要</p>',
+            '<a href="https://example.com">链接</a>',
+            '<strong>重点</strong>',
         )
         for raw in cases:
             with self.subTest(raw=raw), self.assertRaises(ExcerptValidationError):
                 validate_generated_excerpt(raw, minimum=1)
+
+    def test_graphql_types_arrays_and_index_expressions_are_plain_text(self):
+        cases = (
+            "[ThemeStyleSetting!]!", "[ThemeSetting!]!", "[ThemeStyleSetting!]",
+            "[String]", "[String!]", "[[ThemeSetting!]!]!", "$array[0]",
+            "items[key]", "Map[string]int", "array<string>", "foo[bar]",
+            "[0, 1, 2]",
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(raw, validate_generated_excerpt(raw, minimum=1))
+
+    def test_real_post_6373_rejected_excerpt_is_now_accepted(self):
+        self.assertEqual(
+            POST_6373_REJECTED_EXCERPT,
+            validate_generated_excerpt(POST_6373_REJECTED_EXCERPT),
+        )
 
     def test_invalid_or_context_free_sqlstate_brackets_are_not_exempt(self):
         for raw in ("[HY000]", "SQLSTATE[HY00]", "SQLSTATE[HY0000]", "SQLSTATE[HY-00]"):
