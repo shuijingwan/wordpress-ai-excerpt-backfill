@@ -1960,7 +1960,11 @@ def _normalized_execution_status(status):
 
 
 def _structured_execution_failure(execution):
-    """Prefer the executor's structured WordPress evidence over HTTP status."""
+    """Prefer structured execution evidence over stderr text heuristics."""
+    status = _normalized_execution_status((execution or {}).get("status"))
+    if status == "excerpt_rejected":
+        return {"category": "rejected_excerpt_generation"}
+
     response = (execution or {}).get("error_response") or {}
     code = response.get("code")
     message = response.get("message")
@@ -2122,7 +2126,7 @@ def _classify_subprocess_failure(completed, phase):
         "http error 502", "http error 503", "bad gateway",
     )
     authentication_markers = (
-        "http error 401", "http error 403", "unauthorized", "forbidden",
+        "http error 401", "http error 403", "unauthorized",
         "authentication failed",
     )
     if any(marker in combined for marker in readonly_markers):

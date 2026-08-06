@@ -1426,7 +1426,14 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             value = json.loads(execution_path.read_text(encoding="utf-8"))
             value["excerpt_generation_attempts"] = 3
             MODULE._atomic_write_json(execution_path, value)
-            return mock.Mock(returncode=2, stdout="", stderr="excerpt rejected")
+            return mock.Mock(
+                returncode=2,
+                stdout="",
+                stderr=(
+                    "ERROR: generated Chinese excerpt contains "
+                    "forbidden markup or payload"
+                ),
+            )
 
         result = MODULE.run_ready(
             self.root, execute=True, runner=runner, sleeper=waits.append,
@@ -1436,6 +1443,11 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual([], waits)
         self.assertEqual(1, item["candidate_attempts"])
         self.assertEqual(3, item["excerpt_generation_attempts"])
+        self.assertEqual("excerpt_rejected", item["result"])
+        self.assertEqual(
+            "rejected_excerpt_generation",
+            item["category"],
+        )
         rendered = [MODULE.render_run_progress(*values) for values in progress]
         self.assertFalse(any("第 2/3 次尝试" in line for line in rendered))
         self.assertTrue(any(
@@ -2256,6 +2268,20 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             mock.Mock(returncode=1, stderr="HTTP Error 401: Unauthorized", stdout=""),
             "preflight")
         self.assertEqual("authentication_error", auth["category"])
+
+    def test_excerpt_validation_forbidden_text_is_not_authentication_error(self):
+        failure = MODULE._classify_subprocess_failure(
+            mock.Mock(
+                returncode=2,
+                stderr=(
+                    "ERROR: generated Chinese excerpt contains "
+                    "forbidden markup or payload"
+                ),
+                stdout="",
+            ),
+            "execute",
+        )
+        self.assertNotEqual("authentication_error", failure["category"])
 
     def test_execute_transient_without_artifacts_returns_ready_and_keeps_attempt(self):
         self.prepare_converted()

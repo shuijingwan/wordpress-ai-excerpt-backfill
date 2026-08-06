@@ -68,6 +68,9 @@ class GlmClientTest(unittest.TestCase):
         self.assertIn("“摘要：”“文章摘要：”等前缀", prompt)
         self.assertIn("直接保存到 WordPress post_excerpt", prompt)
         self.assertIn("不要解释、说明、前言或结语", prompt)
+        self.assertIn("完整 URL", prompt)
+        self.assertIn("http://", prompt)
+        self.assertIn("https://", prompt)
 
     def test_api_key_absent_from_errors(self):
         transport = RecordingTransport({"message": "denied"}, status=401)
