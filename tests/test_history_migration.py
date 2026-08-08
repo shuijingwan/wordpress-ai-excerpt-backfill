@@ -2063,6 +2063,103 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("completed article", result["blocking_reasons"][0])
         self.assertEqual(before, self.snapshot())
 
+    def test_reconcile_resume_attempts_is_scoped_to_recovery_generation(self):
+        state_path = self.prepare_translation_failed()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        terminal = {
+            "result": "translation_failed", "category": "completed",
+            "returncode": 0, "error": "",
+        }
+
+        for _ in range(3):
+            attempt = MODULE._record_attempt_start(self.root, state, "resume")
+            MODULE._record_attempt_outcome(
+                self.root, state, "resume", attempt, terminal)
+            state["workflow_status"] = "translation_failed"
+            MODULE._atomic_write_json(state_path, state)
+
+        state["recovery_generation"] = 1
+        state["lifetime_retry_counts"] = {"resume": 3}
+        state["retry_counts"] = {"run": 0, "resume": 0}
+        state["workflow_status"] = "ready_for_translation_resume"
+        restart_event = MODULE._transition_event(
+            "failed_execution_restarted", state, "translation_failed",
+            "ready_for_execution", "source changed", {"recovery_generation": 1},
+            "2026-08-08T00:00:00+00:00", "restart-current|1")
+        MODULE._persist_transition(self.root, state_path, state, restart_event)
+
+        terminal_attempt = MODULE._record_attempt_start(self.root, state, "resume")
+        MODULE._record_attempt_outcome(
+            self.root, state, "resume", terminal_attempt, terminal)
+        state["workflow_status"] = "ready_for_translation_resume"
+        MODULE._atomic_write_json(state_path, state)
+        orphaned_attempt = MODULE._record_attempt_start(self.root, state, "resume")
+
+        self.assertEqual(4, terminal_attempt)
+        self.assertEqual(5, orphaned_attempt)
+        preview = MODULE.reconcile_attempts(self.root, 401, stage="resume")
+        item = preview["items"][0]
+        self.assertEqual([5], item["orphaned_attempts"])
+        self.assertEqual([4], item["terminated_attempts"])
+        self.assertEqual(2, item["current_resume_count"])
+        self.assertEqual(1, item["corrected_resume_count"])
+
+        applied = MODULE.reconcile_attempts(
+            self.root, 401, stage="resume", apply=True)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(1, state["retry_counts"]["resume"])
+        self.assertEqual(3, state["lifetime_retry_counts"]["resume"])
+
+        self.write_execution(401, 1401, "translation_started")
+        MODULE.sync_execution(self.root, apply=True)
+        resume = MODULE.resume(self.root, post_id=401)
+        self.assertEqual(1, resume["selected_count"])
+        self.assertEqual(1, resume["allowed_count"])
+        self.assertNotIn("resume retry limit exhausted",
+                         resume["items"][0]["blocking_reasons"])
+
+    def test_reconcile_corrects_stale_resume_count_without_current_orphans(self):
+        state_path = self.prepare_translation_failed()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "recovery_generation": 1,
+            "lifetime_retry_counts": {"resume": 3},
+            "retry_counts": {"run": 0, "resume": 3},
+            "workflow_status": "ready_for_translation_resume",
+        })
+        restart_event = MODULE._transition_event(
+            "failed_execution_restarted", state, "translation_failed",
+            "ready_for_execution", "source changed", {"recovery_generation": 1},
+            "2026-08-08T00:00:00+00:00", "restart-current|1")
+        MODULE._persist_transition(self.root, state_path, state, restart_event)
+
+        preview = MODULE.reconcile_attempts(self.root, 401, stage="resume")
+        item = preview["items"][0]
+        self.assertTrue(preview["eligible"])
+        self.assertEqual(1, preview["planned_count"])
+        self.assertEqual([], item["orphaned_attempts"])
+        self.assertEqual([], item["terminated_attempts"])
+        self.assertEqual(3, item["current_resume_count"])
+        self.assertEqual(0, item["corrected_resume_count"])
+        self.assertTrue(item["counter_drift"])
+        self.assertEqual("counter_drift_correction", item["reconciliation_action"])
+
+        applied = MODULE.reconcile_attempts(
+            self.root, 401, stage="resume", apply=True)
+        self.assertTrue(applied["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(0, state["retry_counts"]["resume"])
+        self.assertEqual(3, state["lifetime_retry_counts"]["resume"])
+        self.assertEqual(1, state["recovery_generation"])
+
+        self.write_execution(401, 1401, "translation_started")
+        MODULE.sync_execution(self.root, apply=True)
+        resume = MODULE.resume(self.root, post_id=401)
+        self.assertEqual(1, resume["allowed_count"])
+        self.assertNotIn("resume retry limit exhausted",
+                         resume["items"][0]["blocking_reasons"])
+
     def test_new_json_commands_are_valid_and_read_only(self):
         self.prepare_init_fixture()
         MODULE.init_state(self.root, apply=True)

@@ -2082,7 +2082,8 @@ def _record_attempt_start(root, state, stage):
     event = _transition_event(
         f"{stage}_attempt_started", state, previous, "execution_in_progress",
         f"{stage} attempt {attempt} started",
-        {"stage": stage, "attempt": attempt}, timestamp,
+        {"stage": stage, "attempt": attempt,
+         "recovery_generation": state.get("recovery_generation")}, timestamp,
         f"{stage}|{attempt}|{timestamp}")
     _persist_transition(
         root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
@@ -2170,7 +2171,8 @@ def _block_after_operation_error(root, state, stage, attempt, failure):
     event = _transition_event(
         f"{stage}_attempt_failed", state, previous, "blocked",
         "execution subprocess failed without usable execution evidence",
-        {"stage": stage, "attempt": attempt, **failure},
+        {"stage": stage, "attempt": attempt,
+         "recovery_generation": state.get("recovery_generation"), **failure},
         timestamp, f"{stage}|{attempt}|blocked|{timestamp}")
     _persist_transition(
         root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
@@ -2184,6 +2186,7 @@ def _record_attempt_outcome(root, state, stage, attempt, completed, failure=None
     evidence = {
         "stage": stage,
         "attempt": attempt,
+        "recovery_generation": state.get("recovery_generation"),
         "result": completed["result"],
         "category": completed["category"],
         "returncode": completed["returncode"],
@@ -3027,14 +3030,41 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
     }
 
 
-def _resume_attempt_numbers(events, post_id, event_types, stage="resume"):
+def _event_recovery_generation(events, index):
+    """Return an event's explicit or restart-bound recovery generation."""
+    event = events[index]
+    evidence = event.get("evidence") or {}
+    generation = evidence.get("recovery_generation")
+    if generation is not None:
+        try:
+            return int(generation)
+        except (TypeError, ValueError):
+            return None
+    active_generation = 0
+    for prior in events[:index]:
+        if (prior.get("chinese_post_id") != event.get("chinese_post_id")
+                or prior.get("event_type") != "failed_execution_restarted"):
+            continue
+        try:
+            active_generation = int((prior.get("evidence") or {})[
+                "recovery_generation"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return active_generation
+
+
+def _resume_attempt_numbers(events, post_id, event_types, stage="resume",
+                            recovery_generation=None):
     attempts = set()
-    for event in events:
+    for index, event in enumerate(events):
         if (
                 event.get("chinese_post_id") == int(post_id)
                 and event.get("event_type") in event_types):
             evidence = event.get("evidence") or {}
-            if evidence.get("stage") == stage:
+            if (evidence.get("stage") == stage
+                    and (recovery_generation is None
+                         or _event_recovery_generation(events, index)
+                         == int(recovery_generation))):
                 try:
                     attempts.add(int(evidence["attempt"]))
                 except (KeyError, TypeError, ValueError):
@@ -3042,13 +3072,16 @@ def _resume_attempt_numbers(events, post_id, event_types, stage="resume"):
     return attempts
 
 
-def _reconciled_attempt_numbers(events, post_id, stage):
+def _reconciled_attempt_numbers(events, post_id, stage, recovery_generation=None):
     resolved = set()
-    for event in events:
+    for index, event in enumerate(events):
         if (
                 event.get("chinese_post_id") == int(post_id)
                 and event.get("event_type")
-                == f"{stage}_orphaned_attempts_reconciled"):
+                == f"{stage}_orphaned_attempts_reconciled"
+                and (recovery_generation is None
+                     or _event_recovery_generation(events, index)
+                     == int(recovery_generation))):
             for attempt in (event.get("evidence") or {}).get(
                     "orphaned_attempts", []):
                 try:
@@ -3070,16 +3103,20 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
     if state is None:
         raise ReadError(f"coordination state is missing for Chinese post {post_id}")
     events = _read_events(_events_path(root, state["batch_id"]))
+    recovery_generation = state.get("recovery_generation")
     started = _resume_attempt_numbers(
-        events, post_id, {f"{stage}_attempt_started"}, stage=stage)
+        events, post_id, {f"{stage}_attempt_started"}, stage=stage,
+        recovery_generation=recovery_generation)
     terminated = _resume_attempt_numbers(
         events, post_id,
         {f"{stage}_attempt_completed", f"{stage}_attempt_failed"},
-        stage=stage)
-    reconciled = _reconciled_attempt_numbers(events, post_id, stage)
+        stage=stage, recovery_generation=recovery_generation)
+    reconciled = _reconciled_attempt_numbers(
+        events, post_id, stage, recovery_generation=recovery_generation)
     orphaned = sorted(started - terminated - reconciled)
     valid_count = len(terminated)
     current_count = int((state.get("retry_counts") or {}).get(stage, 0))
+    counter_drift = current_count != valid_count
     execution = _execution_details(root, article)
     recover_failed_run = bool(
         stage == "run" and state["workflow_status"] == "blocked"
@@ -3092,7 +3129,7 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
     recovery_action = None
     if state["workflow_status"] == "completed":
         reasons.append("completed article is not eligible")
-    if not orphaned and not recover_failed_run:
+    if not orphaned and not recover_failed_run and not counter_drift:
         reasons.append(f"no orphaned {stage} attempts")
     if stage == "run" and state["workflow_status"] != "completed":
         if state["workflow_status"] != "blocked":
@@ -3128,6 +3165,10 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
         "orphaned_attempts": orphaned, "terminated_attempts": sorted(terminated),
         "current_attempt_count": current_count,
         "corrected_attempt_count": valid_count,
+        "counter_drift": counter_drift,
+        "reconciliation_action": (
+            "orphaned_attempt_reconciliation" if orphaned else
+            "counter_drift_correction" if counter_drift else None),
         "target_workflow_status": target_status,
         "recovery_action": recovery_action,
     }
@@ -3151,14 +3192,20 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
         root, _, fixed, _, states = _context(root)
         state = states[int(post_id)]
         events = _read_events(_events_path(root, state["batch_id"]))
+        recovery_generation = state.get("recovery_generation")
         started = _resume_attempt_numbers(
-            events, post_id, {f"{stage}_attempt_started"}, stage=stage)
+            events, post_id, {f"{stage}_attempt_started"}, stage=stage,
+            recovery_generation=recovery_generation)
         terminated = _resume_attempt_numbers(
             events, post_id,
             {f"{stage}_attempt_completed", f"{stage}_attempt_failed"},
-            stage=stage)
-        reconciled = _reconciled_attempt_numbers(events, post_id, stage)
+            stage=stage, recovery_generation=recovery_generation)
+        reconciled = _reconciled_attempt_numbers(
+            events, post_id, stage, recovery_generation=recovery_generation)
         orphaned = sorted(started - terminated - reconciled)
+        valid_count = len(terminated)
+        current_count = int((state.get("retry_counts") or {}).get(stage, 0))
+        counter_drift = current_count != valid_count
         recover_failed_run = bool(
             stage == "run" and state["workflow_status"] == "blocked"
             and terminated and not orphaned and execution
@@ -3166,13 +3213,13 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
                 "prepared", "excerpt_generated", "chinese_excerpt_saved",
                 "translation_started", "translation_failed"})
         if (
-                (not orphaned and not recover_failed_run)
+                (not orphaned and not recover_failed_run and not counter_drift)
                 or state["workflow_status"] == "completed"):
             return result
         attempts = dict(state.get("retry_counts") or {})
         previous_count = int(attempts.get(stage, 0))
         attempts[stage] = (
-            len(terminated) if orphaned else previous_count)
+            valid_count if (orphaned or counter_drift) else previous_count)
         state["retry_counts"] = attempts
         timestamp = datetime.now(timezone.utc).isoformat()
         previous_status = state["workflow_status"]
@@ -3190,17 +3237,22 @@ def reconcile_attempts(root, post_id, apply=False, stage="resume",
         event_type = (
             f"{stage}_orphaned_attempts_reconciled"
             if orphaned else "run_failed_attempt_reconciled")
+        if counter_drift and not orphaned:
+            event_type = f"{stage}_attempt_counter_drift_reconciled"
         event = _transition_event(
             event_type, state,
             previous_status, target_status,
             (
                 f"orphaned {stage} attempts removed from retry count"
                 if orphaned else
+                f"{stage} retry count corrected to the current recovery generation"
+                if counter_drift else
                 "failed run recovered without changing valid attempt count"
             ),
             {
                 "stage": stage, "orphaned_attempts": orphaned,
                 "terminated_attempts": sorted(terminated),
+                "recovery_generation": recovery_generation,
                 "previous_attempt_count": previous_count,
                 "corrected_attempt_count": len(terminated),
                 "execution_status": execution["status"] if execution else None,
