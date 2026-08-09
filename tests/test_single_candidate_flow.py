@@ -146,6 +146,40 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
             self.assertEqual([(1, 1001)] * 3, polylang.calls)
 
+    def test_drifted_english_target_is_backed_up_before_glm_or_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wp = MockWp()
+            wp.posts[1001]["title"]["raw"] = "Current target title"
+            wp.posts[1001]["excerpt"]["raw"] = "Current target excerpt"
+            wp.posts[1001]["content"]["raw"] = "Current target content"
+
+            def assert_backup_precedes_generation():
+                backup = json.loads(
+                    (Path(directory) / "chinese-1.pre-write.json").read_text())
+                self.assertEqual("Current target title", backup["before"]["english_title"])
+                self.assertEqual("Current target excerpt", backup["before"]["english_excerpt"])
+                self.assertEqual("Current target content", backup["before"]["english_content"])
+                audit = backup["target_audit"]
+                self.assertEqual(
+                    ["english_title", "english_excerpt", "english_content"],
+                    audit["overwrite_scope"])
+                self.assertEqual(
+                    ["english_title", "english_excerpt", "english_content"],
+                    audit["drift_fields"])
+                self.assertTrue(audit["target_drift_detected"])
+                self.assertEqual(digest("Old title"),
+                                 audit["execution_candidate_baseline_sha256"]["english_title"])
+                self.assertEqual(digest("Current target title"),
+                                 audit["pre_write_target_sha256"]["english_title"])
+                self.assertEqual([], wp.update_calls)
+
+            glm = SequenceGlm([VALID_EXCERPT], before_call=assert_backup_precedes_generation)
+            flow, _, _, translator, _ = self.make_flow(directory, wp=wp, glm=glm)
+            result = flow.execute(1)
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(1, translator.calls)
+            self.assertEqual("Translated title", wp.posts[1001]["title"]["raw"])
+
     def prepare_recovery_restart(self, directory, wp, excerpt):
         wp.posts[1]["excerpt"]["raw"] = excerpt
         backup_path = Path(directory) / "chinese-1.pre-write.json"

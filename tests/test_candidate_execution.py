@@ -54,7 +54,7 @@ def live(row):
         "english_title_sha256": row["english_title_sha256"],
         "english_excerpt_sha256": row["english_excerpt_sha256"],
         "english_content_sha256": row["english_content_sha256"],
-        "chinese_title": "标题", "chinese_content": "正文",
+        "chinese_title": row["chinese_title"], "chinese_content": "正文",
     }
 
 
@@ -121,6 +121,21 @@ class SafetyBoundaryTest(unittest.TestCase):
                 result = dry_run(rows, snapshots)
                 self.assertEqual(1, result["skipped"])
                 self.assertEqual(1, result["skip_reasons"][reason])
+
+    def test_english_target_drift_is_audited_but_does_not_block_live_validation(self):
+        rows = manifest(); snapshots = {int(row["chinese_post_id"]): live(row) for row in rows}
+        for field in ("english_title_sha256", "english_excerpt_sha256", "english_content_sha256"):
+            with self.subTest(field=field):
+                snapshots[1][field] = digest("current target drift")
+                result = dry_run(rows, snapshots)
+                self.assertEqual(42, result["passed"])
+                snapshots[1][field] = rows[0][field]
+
+    def test_chinese_title_drift_remains_blocking(self):
+        rows = manifest(); snapshots = {int(row["chinese_post_id"]): live(row) for row in rows}
+        snapshots[1]["chinese_title"] = "已变化标题"
+        result = dry_run(rows, snapshots)
+        self.assertEqual(1, result["skip_reasons"]["chinese_title_changed"])
 
     def test_protected_posts_cannot_overlap_manifest(self):
         rows = manifest(); snapshots = {int(r["chinese_post_id"]): live(r) for r in rows}

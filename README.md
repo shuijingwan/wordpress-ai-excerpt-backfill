@@ -152,6 +152,13 @@ execution、pre-write 和 rejected 文本，创建新的 recovery generation；�
 WordPress shortcode；只有明确 SQLSTATE 上下文会被豁免，真正的 shortcode 和 HTML 仍会被拒绝。
 禁止删除 backup 或手工修改 execution、coordination JSON。
 
+Fresh run 将中文 title/content 作为严格锁定的生成 source；中文 excerpt 与英文
+title/excerpt/content 是覆盖 target。英文 target 的冻结 SHA-256 会继续作为审计基线报告，
+但不会仅因 drift 阻断完整覆盖：执行器会在最后一次读取 target 后、任何写入前创建私有原子
+pre-write backup，记录当前值、候选基线、drift 字段和完整覆盖范围。当前 WordPress/SlyTranslate
+接口没有 target revision 的原子 compare-and-overwrite；因此备份与翻译调用保持相邻，但不能消除该
+外部接口固有的并发窗口。
+
 ## Mixed SyntaxHighlighter 固定批次构建
 
 `bin/build-mixed-syntaxhighlighter-batch.py` 用于从本地 Mixed preview、只读 WordPress raw JSONL

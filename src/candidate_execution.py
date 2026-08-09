@@ -99,27 +99,22 @@ def validate_manifest(rows, expected_count=EXPECTED_CANDIDATES):
 
 
 def validate_live(row, live, resume=False):
-    """Return reasons; never search for a replacement when validation fails."""
+    """Return blocking source/identity failures; English hashes are audit baselines."""
     checks = (
         (live.get("chinese_exists") is True, "chinese_missing"),
         (live.get("chinese_status") == "publish", "chinese_not_published"),
         (live.get("chinese_language") == "zh", "chinese_not_polylang_zh"),
         (live.get("chinese_excerpt_empty") is True, "chinese_excerpt_not_empty"),
+        (live.get("chinese_title") == row["chinese_title"], "chinese_title_changed"),
         (live.get("chinese_content_sha256") == row["chinese_content_sha256"], "chinese_content_changed"),
         (live.get("is_gutenberg") is True, "not_gutenberg"),
         (live.get("has_code_block_pro") is True, "no_code_block_pro"),
         (live.get("phase1_eligible") is True, "phase1_ineligible"),
         (int(live.get("linked_english_post_id") or 0) == int(row["english_post_id"]), "english_relation_changed"),
         (live.get("english_status") == "publish", "english_not_published"),
-        (live.get("english_title_sha256") == row["english_title_sha256"], "english_title_changed"),
-        (live.get("english_excerpt_sha256") == row["english_excerpt_sha256"], "english_excerpt_changed"),
-        (live.get("english_content_sha256") == row["english_content_sha256"], "english_content_changed"),
     )
     resume_expected_changes = {
         "chinese_excerpt_not_empty",
-        "english_title_changed",
-        "english_excerpt_changed",
-        "english_content_changed",
     }
     return [
         reason for passed, reason in checks
@@ -259,6 +254,10 @@ def validate_generated_excerpt(value, minimum=80, maximum=300):
 
 def backup_record(row, live, *, executed_at, model=None, request_id=None, status="prepared"):
     """Create a per-post recoverable pre-write record (caller persists atomically)."""
+    drift_fields = [
+        field for field in ("english_title", "english_excerpt", "english_content")
+        if sha256_text(live[field]) != row[f"{field}_sha256"]
+    ]
     return {
         "schema_version": 1, "chinese_post_id": int(row["chinese_post_id"]),
         "english_post_id": int(row["english_post_id"]), "executed_at": executed_at,
@@ -283,6 +282,27 @@ def backup_record(row, live, *, executed_at, model=None, request_id=None, status
             "english_title": sha256_text(live["english_title"]),
             "english_excerpt": sha256_text(live["english_excerpt"]),
             "english_content": sha256_text(live["english_content"]),
+        },
+        # English title/excerpt/content are complete-overwrite targets, not
+        # generation inputs.  The execution-candidate hashes remain evidence
+        # of the validation baseline; this record captures the last target
+        # version read immediately before any write for rollback.
+        "target_audit": {
+            "overwrite_scope": [
+                "english_title", "english_excerpt", "english_content",
+            ],
+            "execution_candidate_baseline_sha256": {
+                "english_title": row["english_title_sha256"],
+                "english_excerpt": row["english_excerpt_sha256"],
+                "english_content": row["english_content_sha256"],
+            },
+            "pre_write_target_sha256": {
+                "english_title": sha256_text(live["english_title"]),
+                "english_excerpt": sha256_text(live["english_excerpt"]),
+                "english_content": sha256_text(live["english_content"]),
+            },
+            "drift_fields": drift_fields,
+            "target_drift_detected": bool(drift_fields),
         },
     }
 

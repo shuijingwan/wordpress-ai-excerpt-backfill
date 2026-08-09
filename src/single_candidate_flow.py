@@ -169,9 +169,6 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
         "chinese_excerpt_empty": not zh_excerpt.strip(),
         "chinese_title_matches": title == row["chinese_title"],
         "chinese_content_sha256_matches": sha256_text(content) == row["chinese_content_sha256"],
-        "english_title_sha256_matches": sha256_text(en_title) == row["english_title_sha256"],
-        "english_excerpt_sha256_matches": sha256_text(en_excerpt) == row["english_excerpt_sha256"],
-        "english_content_sha256_matches": sha256_text(en_content) == row["english_content_sha256"],
         "gutenberg": analysis["blocks"]["has_block_comments"],
         "code_block_pro": code_block_pro_count > 0,
         "expected_code_block_pro_count": (
@@ -185,16 +182,28 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
         "phase1_eligible": eligibility["eligible"],
     }
     if resume:
-        for name in (
-                "chinese_excerpt_empty", "english_title_sha256_matches",
-                "english_excerpt_sha256_matches",
-                "english_content_sha256_matches"):
-            checks[name] = True
+        checks["chinese_excerpt_empty"] = True
     if recovery_restart is not None:
         state, backup = recovery_restart
         validate_recovery_restart_excerpt(
             state, backup, zh_id, en_id, zh_excerpt)
         checks["chinese_excerpt_empty"] = True
+    target_sha256 = {
+        "english_title": {
+            "execution_candidate_baseline": row["english_title_sha256"],
+            "current": sha256_text(en_title),
+        },
+        "english_excerpt": {
+            "execution_candidate_baseline": row["english_excerpt_sha256"],
+            "current": sha256_text(en_excerpt),
+        },
+        "english_content": {
+            "execution_candidate_baseline": row["english_content_sha256"],
+            "current": sha256_text(en_content),
+        },
+    }
+    for evidence in target_sha256.values():
+        evidence["drift"] = evidence["current"] != evidence["execution_candidate_baseline"]
     return {
         "mode": "preflight-live", "chinese_post_id": zh_id, "english_post_id": en_id,
         "returned_ids": {"chinese_correct": chinese.get("id") == zh_id,
@@ -219,9 +228,17 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
         "english_excerpt_empty": not en_excerpt.strip(),
         "sha256_matches": {
             "chinese_content": checks["chinese_content_sha256_matches"],
-            "english_title": checks["english_title_sha256_matches"],
-            "english_excerpt": checks["english_excerpt_sha256_matches"],
-            "english_content": checks["english_content_sha256_matches"],
+            "english_title": not target_sha256["english_title"]["drift"],
+            "english_excerpt": not target_sha256["english_excerpt"]["drift"],
+            "english_content": not target_sha256["english_content"]["drift"],
+        },
+        "target_audit": {
+            "overwrite_scope": [
+                "english_title", "english_excerpt", "english_content",
+            ],
+            "sha256": target_sha256,
+            "target_drift_detected": any(
+                evidence["drift"] for evidence in target_sha256.values()),
         },
         "structure": {"gutenberg": checks["gutenberg"],
                       "code_block_pro": checks["code_block_pro"],
