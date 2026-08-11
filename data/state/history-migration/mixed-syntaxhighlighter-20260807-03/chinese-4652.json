@@ -1,0 +1,110 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260807-03",
+  "batch_position": 18,
+  "blocked_reasons": [],
+  "chinese_post_id": 4652,
+  "english_post_id": 14655,
+  "execution_evidence": {
+    "sha256": "aa413f4e76b5fb771921bd1262f211346c7a46a7da2844d34884b9f11b14004f",
+    "source_file": "data/backups/single-candidate/chinese-4652.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-07T11:55:15.260403+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-07T10:41:34.346035+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-07T11:55:15.260403+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 5,
+    "occurred_at": "2026-08-08T09:06:01.626346+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 110, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 68, in main\n    result = preflight_live_result(\n        row, WordPressRestClient(), PolylangSshChecker(), config,\n        resume=args.resume, recovery_restart=recovery_restart)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 115, in preflight_live_result\n    chinese = wp.get_post(zh_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 25, in get_post\n    return request_json(self.transport, \"GET\",\n                        f\"{BASE_URL}/wp-json/wp/v2/posts/{int(post_id)}?context=edit\",\n                        self._headers(), timeout=self.timeout)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 403: rest_cookie_invalid_nonce: Cookie 检查失败\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "resume": 3,
+    "run": 1
+  },
+  "manual_conversion": {
+    "cbp_count_after": 17,
+    "confirmed_at": "2026-08-07T11:55:15.260403+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 17
+  },
+  "recovery": {
+    "action": "restart",
+    "execution_sha256": "66703e915d5bb47f107ea175295899d1c22228fc702ffc675169d055c03eaed6",
+    "execution_status": "prepared",
+    "recovered_at": "2026-08-07T13:44:29.183987+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 2,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260807-03.csv",
+  "source_batch_sha256": "f18eb3f79c1c84bffb9c104af19921c5654c9035527271ec9c2b8e9563c0f8cd",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-4652/20260807T134152.870503Z",
+    "expected_pre_run_excerpt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 3,
+      "error_summary": "",
+      "occurred_at": "2026-08-07T13:20:04.348591+00:00",
+      "reason": "transient_network_error",
+      "returncode": 1,
+      "stage": "resume",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 110, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 102, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 380, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400: prompt_client_error: Bad Request (400) - 系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "reason": "Chinese source edited after failed execution",
+    "recovered_at": "2026-08-07T13:41:52.870503+00:00",
+    "recovery_kind": "source_changed_after_translation_failure",
+    "restart_excerpt_state": "empty",
+    "status": "applied"
+  },
+  "source_row_sha256": "6d5aa72af665e140cf7b5444e125925267a6f1c3b6bbf64b9ed2c57e58d4974e",
+  "updated_at": "2026-08-08T09:12:10.579314+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "57546fdc420950001d452248a21c7d19ad95711ebd5f44abe81769ae05cc7628",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "7ccf9fbee8b422a79fae11518d145d6be6160f31196960cd2dd722b14bc8392b",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260807-03/chinese-4652.csv",
+    "status": "ready",
+    "validated_at": "2026-08-07T11:57:54.436022+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

@@ -1,0 +1,78 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260809-03",
+  "batch_position": 2,
+  "blocked_reasons": [],
+  "chinese_post_id": 3949,
+  "english_post_id": 14956,
+  "execution_evidence": {
+    "sha256": "42f86076c766894138e45dae8242227401a6e59f1dc8a4d00542309b0cb75c94",
+    "source_file": "data/backups/single-candidate/chinese-3949.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-09T12:29:38.490536+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-09T11:01:09.333983+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-09T12:29:38.490536+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "error_summary": "swq_full_article_token_validation_failed: Protected token validation failed: expected_count=46, actual_count=47, missing_tokens=[], extra_tokens=[\"SWQBLOCK000005END\"], fixed_order=no, first_mismatch_index=6, previous_expected_token=SWQSTRUCT000004END, next_expected_token=SWQSTRUCT000006END, raw_response_file=/tmp/swq-glm52-token-validation-output.txt, diagnostic_file=/tmp/swq-glm52-token-validation-summary.json",
+    "occurred_at": "2026-08-09T12:33:52.898399+00:00",
+    "reason": "protected_token_validation_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 110, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 102, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 397, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_full_article_token_validation_failed: Protected token validation failed: expected_count=46, actual_count=47, missing_tokens=[], extra_tokens=[\"SWQBLOCK000005END\"], fixed_order=no, first_mismatch_index=6, previous_expected_token=SWQSTRUCT000004END, next_expected_token=SWQSTRUCT000006END, raw_response_file=/tmp/swq-glm52-token-validation-output.txt, diagnostic_file=/tmp/swq-glm52-token-validation-summary.json\n",
+    "stdout_summary": "",
+    "wordpress_code": "swq_full_article_token_validation_failed",
+    "wordpress_message": "Protected token validation failed: expected_count=46, actual_count=47, missing_tokens=[], extra_tokens=[\"SWQBLOCK000005END\"], fixed_order=no, first_mismatch_index=6, previous_expected_token=SWQSTRUCT000004END, next_expected_token=SWQSTRUCT000006END, raw_response_file=/tmp/swq-glm52-token-validation-output.txt, diagnostic_file=/tmp/swq-glm52-token-validation-summary.json"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 4,
+    "confirmed_at": "2026-08-09T12:29:38.490536+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 4
+  },
+  "retry_counts": {
+    "resume": 1,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260809-03.csv",
+  "source_batch_sha256": "5b177fe56c36142c066524da5910a67bd45789f22a5c1b394f203e6688068ac3",
+  "source_row_sha256": "98b22cbe8e5a7656b55ef80e46ae894e33bc3d8723371f1bbb2f2f4159d83a1a",
+  "updated_at": "2026-08-09T13:09:00.536844+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "c37203a679ee3eb3d941f9336097e3993492a610502b83461450d45b946b1634",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "3e64197086b1b127263712a8ec5eae7398d589cac14331509d239f5cb186ae49",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260809-03/chinese-3949.csv",
+    "status": "ready",
+    "validated_at": "2026-08-09T12:29:57.194012+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
