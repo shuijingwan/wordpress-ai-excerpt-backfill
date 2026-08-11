@@ -195,7 +195,7 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
         (relation_ok, "polylang-relation-abnormal"),
         (analysis["blocks"]["has_block_comments"], "not-gutenberg"),
         (analysis["blocks"]["balanced"], "gutenberg-unbalanced"),
-        (after_cbp <= expected_cbp, "code-block-pro-count-mismatch"),
+        (after_cbp >= expected_cbp, "code-block-pro-count-below-expected"),
         (len(cbp["blocks"]) == after_cbp and not cbp["damaged"], "code-block-pro-unparseable"),
         (all(item["code_nonempty"] for item in cbp["blocks"]), "code-block-pro-empty"),
         (all(item["attributes_valid"] and item["language_valid"] for item in cbp["blocks"]),

@@ -1412,8 +1412,6 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
             raise ReadError(
                 f"syntax-count-before mismatch: expected {expected}, got "
                 f"{syntax_count_before}")
-        if cbp_count_after > syntax_count_before:
-            raise ReadError("cbp-count-after must not exceed syntax-count-before")
         if state["workflow_status"] == "awaiting_readonly_validation":
             same = (
                 state.get("manual_conversion", {}).get("status") == "confirmed"
@@ -1553,12 +1551,13 @@ def _validation_result(path, batch, article, state):
         raise ReadError(f"{path}: validation expected Code Block Pro count mismatch")
     validation_reasons = _validation_text(
         row, "validation_reasons", path)
+    manual_cbp = state.get("manual_conversion", {}).get("cbp_count_after")
     checks = {
         "syntaxhighlighter_zero":
             _validation_int(row, "after_syntaxhighlighter_count", path) == 0,
         "code_block_pro_count":
             _validation_int(row, "after_code_block_pro_count", path)
-            <= expected_cbp,
+            >= expected_cbp,
         "unknown_code_formats_zero":
             "unexpected-code-format:" not in validation_reasons,
         "polylang_relation_normal":
@@ -1578,8 +1577,10 @@ def _validation_result(path, batch, article, state):
             _validation_int(row, "before_code_block_pro_count", path)
             == int(article["source_row"]["before_code_block_pro_count"]),
         "manual_cbp_count":
-            _validation_int(row, "after_code_block_pro_count", path)
-            <= expected_cbp,
+            isinstance(manual_cbp, int)
+            and not isinstance(manual_cbp, bool)
+            and _validation_int(row, "after_code_block_pro_count", path)
+            >= manual_cbp,
     }
     if batch["source_type"] == "mixed_syntaxhighlighter_daily":
         checks.update({

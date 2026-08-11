@@ -917,13 +917,13 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(MODULE.EXIT_OK, code)
         self.assertEqual(result["batch_id"], json.loads(output.getvalue())["batch_id"])
 
-    def test_mark_converted_requires_language_and_matching_counts(self):
+    def test_mark_converted_requires_language_and_matching_syntax_count(self):
         self.prepare_init_fixture()
         MODULE.init_state(self.root, apply=True)
         with self.assertRaisesRegex(MODULE.ReadError, "language-review-confirmed"):
             MODULE.mark_converted(self.root, 401, 1, 1, False)
-        with self.assertRaisesRegex(MODULE.ReadError, "must not exceed"):
-            MODULE.mark_converted(self.root, 401, 1, 2, True)
+        result = MODULE.mark_converted(self.root, 401, 1, 2, True)
+        self.assertEqual("awaiting_readonly_validation", result["workflow_status"])
 
     def test_mark_converted_is_atomic_and_idempotent(self):
         self.prepare_init_fixture()
@@ -973,15 +973,42 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(before, (state_path.read_bytes(), event_path.read_bytes(),
                                   state_path.stat().st_mtime_ns))
 
-    def test_record_validation_accepts_cbp_below_original_limit(self):
+    def test_record_validation_rejects_cbp_below_expected_minimum(self):
         self.prepare_init_fixture()
         MODULE.init_state(self.root, apply=True)
-        MODULE.mark_converted(self.root, 401, 1, 0, True)
-        path = self.write_record_validation(after_code_block_pro_count=0)
+        MODULE.mark_converted(self.root, 401, 1, 1, True)
+        path = self.write_record_validation(
+            validation_status="abnormal",
+            validation_reasons="code-block-pro-count-below-expected",
+            after_code_block_pro_count=0)
+        result = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.assertEqual("validation_failed", result["workflow_status"])
+        self.assertFalse(result["validation_passed"])
+
+    def test_record_validation_accepts_cbp_above_expected_and_manual_minima(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 3, True)
+        path = self.write_record_validation(after_code_block_pro_count=4)
         result = MODULE.record_validation(
             self.root, 401, str(path.relative_to(self.root)))
         self.assertEqual("ready_for_execution", result["workflow_status"])
         self.assertTrue(result["validation_passed"])
+
+    def test_record_validation_rejects_cbp_below_manual_confirmed_minimum(self):
+        self.prepare_init_fixture()
+        MODULE.init_state(self.root, apply=True)
+        MODULE.mark_converted(self.root, 401, 1, 3, True)
+        path = self.write_record_validation(
+            validation_status="abnormal",
+            validation_reasons="manual-cbp-count-below-confirmed",
+            after_code_block_pro_count=2)
+        result = MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.assertEqual("validation_failed", result["workflow_status"])
+        self.assertIn(
+            "manual_cbp_count", result["failure_reasons"])
 
     def test_record_validation_failure_is_isolated(self):
         self.prepare_init_fixture()
@@ -989,7 +1016,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE.mark_converted(self.root, 401, 1, 1, True)
         path = self.write_record_validation(
             validation_status="abnormal",
-            validation_reasons="code-block-pro-count-mismatch",
+            validation_reasons="code-block-pro-count-below-expected",
             after_code_block_pro_count=0,
         )
         result = MODULE.record_validation(
@@ -1108,7 +1135,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         source = self.fake_source()
         failed = self.validation_row(
             validation_status="abnormal",
-            validation_reasons="code-block-pro-count-mismatch",
+            validation_reasons="code-block-pro-count-below-expected",
             after_code_block_pro_count=0)
         with mock.patch(
                 "src.syntaxhighlighter_batch_validation.validate_batch",
@@ -1147,7 +1174,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         refreshed = self.validation_row(
             after_content_sha256="c" * 64,
-            after_code_block_pro_count=0)
+            after_code_block_pro_count=1)
         with mock.patch(
                 "src.syntaxhighlighter_batch_validation.validate_batch",
                 return_value=[refreshed]):
