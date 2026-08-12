@@ -516,7 +516,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         command = MODULE._executor_command(
             self.root, state, preflight=True, special_validated_mixed=True)
         self.assertIn("--special-validated-mixed", command)
-        ordinary = dict(batch, source_type="mixed_syntaxhighlighter_daily")
+        ordinary = dict(batch, source_type="syntaxhighlighter_daily")
         self.assertFalse(MODULE._special_validated_mixed_execution_allowed(ordinary, state))
 
     def test_execution_manifest_distinguishes_migration_source(self):
@@ -2642,7 +2642,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
     def restart_source(self, *, english_title="English", english_excerpt="",
                        english_content="English body", excerpt="",
-                       chinese_title="人工修复标题", chinese_content=None):
+                       chinese_title="人工修复标题", chinese_content=None,
+                       chinese_id=401, english_id=1401):
         from src.candidate_execution import sha256_text
         content = chinese_content or (
             '<!-- wp:kevinbatdorf/code-block-pro -->'
@@ -2653,21 +2654,21 @@ class HistoryMigrationStatusTest(unittest.TestCase):
 
         class Source:
             def get_post(self, post_id):
-                if int(post_id) == 401:
-                    return {"id": 401, "status": "publish",
+                if int(post_id) == chinese_id:
+                    return {"id": chinese_id, "status": "publish",
                             "title": {"raw": chinese_title},
                             "excerpt": {"raw": excerpt},
                             "content": {"raw": content}}
-                return {"id": 1401, "status": "publish",
+                return {"id": english_id, "status": "publish",
                         "title": {"raw": english_title},
                         "excerpt": {"raw": english_excerpt},
                         "content": {"raw": english_content}}
 
             def check(self, chinese, english):
-                return {"chinese_post_id": 401, "chinese_language": "zh",
-                        "linked_english_post_id": 1401,
-                        "english_post_id": 1401, "english_language": "en",
-                        "linked_chinese_post_id": 401}
+                return {"chinese_post_id": chinese_id, "chinese_language": "zh",
+                        "linked_english_post_id": english_id,
+                        "english_post_id": english_id, "english_language": "en",
+                        "linked_chinese_post_id": chinese_id}
 
         return Source(), content, sha256_text
 
@@ -2694,6 +2695,87 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         }
         MODULE._atomic_write_json(MODULE._prewrite_path(self.root, 401), prewrite)
         return state_path, source, content
+
+    def prepare_blocked_mixed_translation_failure(self, with_validation=True):
+        from src.candidate_execution import sha256_text
+
+        post_id, english_id = 500, 1500
+        content = "<!-- wp:paragraph --><p>正文</p><!-- /wp:paragraph -->"
+        self.prepare_init_fixture()
+        batch_path, batch_id = self.write_mixed_batch(
+            [(post_id, english_id)], suffix="20260812-02")
+        with batch_path.open(encoding="utf-8", newline="") as handle:
+            batch_rows = list(csv.DictReader(handle))
+        batch_rows[0]["expected_code_block_pro_count_after"] = "0"
+        batch_rows[0]["content_sha256"] = sha256_text(content)
+        self.write_csv(batch_path, MIXED_FIELDS, batch_rows)
+        MODULE.init_state(self.root, apply=True)
+        (self.root / "config").mkdir()
+        (self.root / "config/classification.json").write_bytes(
+            (ROOT / "config/classification.json").read_bytes())
+
+        state_path = MODULE._state_path(self.root, batch_id, post_id)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "manual_conversion": {"status": "confirmed"},
+            "gutenberg_normalization": {"status": "confirmed"},
+            "language_review": {"status": "confirmed"},
+            "retry_counts": {"run": 1, "resume": 0},
+        })
+        source, _, _ = self.restart_source(
+            excerpt="旧摘要", chinese_content=content,
+            chinese_id=post_id, english_id=english_id)
+        execution_path = self.write_execution(
+            post_id, english_id, "translation_failed")
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution.update({
+            "generated_excerpt": "旧摘要",
+            "error_response": {"code": "swq_field_translation_failed",
+                                "message": "invalid translation assistant reply"},
+        })
+        MODULE._atomic_write_json(execution_path, execution)
+        prewrite = {
+            "schema_version": 1, "chinese_post_id": post_id,
+            "english_post_id": english_id, "status": "prepared",
+            "sha256": {
+                "chinese_title": sha256_text("人工修复标题"),
+                "chinese_content": sha256_text(content),
+                "chinese_excerpt": sha256_text(""),
+                "english_title": sha256_text("English"),
+                "english_excerpt": sha256_text(""),
+                "english_content": sha256_text("English body"),
+            },
+        }
+        MODULE._atomic_write_json(
+            MODULE._prewrite_path(self.root, post_id), prewrite)
+        manifest_path = MODULE._validation_paths(
+            self.root, batch_id, post_id)[2]
+        manifest = {field: "" for field in MODULE.EXECUTION_MANIFEST_FIELDS}
+        manifest.update({
+            "chinese_post_id": post_id, "chinese_title": "人工修复标题",
+            "chinese_content_sha256": sha256_text(content),
+            "chinese_excerpt_empty": "True", "english_post_id": english_id,
+            "english_post_status": "publish",
+            "english_title_sha256": sha256_text("English"),
+            "english_excerpt_sha256": sha256_text(""),
+            "english_content_sha256": sha256_text("English body"),
+            "candidate_reason": "validated mixed test",
+            "execution_status": "pending", "expected_code_block_pro_count": "0",
+            "expected_syntaxhighlighter_count": "0",
+        })
+        MODULE._atomic_write_csv(
+            manifest_path, MODULE.EXECUTION_MANIFEST_FIELDS, [manifest])
+        if with_validation:
+            validation_path = self.root / "data/analysis" / "validated-500.csv"
+            validation_path.write_text("validated", encoding="utf-8")
+            state["validation_evidence"] = {
+                "status": "ready", "failure_reasons": [],
+                "source_file": str(validation_path.relative_to(self.root)),
+                "sha256": MODULE._file_sha256(validation_path),
+            }
+        MODULE._atomic_write_json(state_path, state)
+        return state_path, source, batch_id, post_id
 
     def prepare_rejected_restart(self, *, excerpt="", missing_rejected=False):
         state_path, source, content = self.prepare_source_restart(excerpt=excerpt)
@@ -2785,6 +2867,122 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual("not_required", result["production_source"])
         self.assertFalse(result["writes_performed"])
         self.assertEqual(before, self.snapshot())
+
+    def test_recover_reclassifies_blocked_translation_failure_as_resume(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        before = self.snapshot()
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("resume", result["strategy"])
+        self.assertEqual(
+            "execution evidence is translation-failed and all recovery checks pass",
+            result["strategy_reasons"][0])
+        self.assertEqual("resume -> execute_single_candidate", result["will_execute"])
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_blocked_translation_failure_with_recovery_blocker_stays_blocked(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        changed, _, _ = self.restart_source(english_content="外部修改的英文正文")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: changed)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertIn("english_content_unchanged", result["strategy_reasons"])
+
+    def test_recover_execute_passes_validated_mixed_flag_for_blocked_resume(self):
+        state_path, source, batch_id, post_id = (
+            self.prepare_blocked_mixed_translation_failure())
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(post_id, 1500, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        preview = MODULE.recover(
+            self.root, post_id, source_factory=lambda rows: source)
+        self.assertEqual("resume", preview["strategy"])
+        result = MODULE.recover(
+            self.root, post_id, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("completed", result["final_status"])
+        self.assertEqual(2, len(calls))
+        self.assertTrue(all("--resume" in command for command in calls))
+        self.assertTrue(all("--special-validated-mixed" in command
+                            for command in calls))
+        self.assertEqual("completed", json.loads(state_path.read_text(
+            encoding="utf-8"))["workflow_status"])
+        self.assertEqual(batch_id, result["batch_id"])
+
+    def test_recover_execute_does_not_bypass_missing_validation_evidence(self):
+        state_path, source, _, post_id = self.prepare_blocked_mixed_translation_failure(
+            with_validation=False)
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return mock.Mock(returncode=1, stdout="", stderr="must not run")
+
+        preview = MODULE.recover(
+            self.root, post_id, source_factory=lambda rows: source)
+        self.assertEqual("blocked", preview["strategy"])
+        result = MODULE.recover(
+            self.root, post_id, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("not_run", result["reexecution"])
+        self.assertEqual([], calls)
+        self.assertEqual("blocked", json.loads(state_path.read_text(
+            encoding="utf-8"))["workflow_status"])
+
+    def test_recover_execute_does_not_start_resume_when_live_drift_exists(self):
+        state_path, source, _, post_id = (
+            self.prepare_blocked_mixed_translation_failure())
+        drifted, _, _ = self.restart_source(
+            english_content="外部修改的英文正文", chinese_id=post_id,
+            english_id=1500, chinese_content=
+            "<!-- wp:paragraph --><p>正文</p><!-- /wp:paragraph -->")
+        runner = mock.Mock(return_value=mock.Mock(
+            returncode=1, stdout="", stderr="must not run"))
+        result = MODULE.recover(
+            self.root, post_id, execute=True,
+            source_factory=lambda rows: drifted, runner=runner)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertEqual("not_run", result["reexecution"])
+        runner.assert_not_called()
+        self.assertEqual("blocked", json.loads(state_path.read_text(
+            encoding="utf-8"))["workflow_status"])
+
+    def test_recover_execute_renders_child_failure_summary(self):
+        _, source, _, post_id = self.prepare_blocked_mixed_translation_failure()
+        runner = mock.Mock(return_value=mock.Mock(
+            returncode=1, stdout="", stderr="preflight structure mismatch"))
+        result = MODULE.recover(
+            self.root, post_id, execute=True,
+            source_factory=lambda rows: source, runner=runner)
+        self.assertEqual("failed", result["reexecution"])
+        self.assertIn(
+            "子进程失败摘要: preflight structure mismatch",
+            MODULE.render_recover_text(result))
 
     def test_recover_old_readonly_blocked_uses_retry_from_ready(self):
         state_path = self.prepare_blocked_run()

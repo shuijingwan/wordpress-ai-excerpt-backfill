@@ -39,6 +39,22 @@ def validate_recovery_restart_excerpt(state, backup, chinese_id, english_id,
     return True
 
 
+def validate_resume_excerpt(state, backup, chinese_id, english_id,
+                            current_excerpt):
+    """Authorize a saved excerpt only when this execution recorded it."""
+    expected_excerpt = validate_generated_excerpt(state.get("generated_excerpt"))
+    hashes = backup.get("sha256") if isinstance(backup.get("sha256"), dict) else {}
+    if (state.get("status") not in {
+                "excerpt_generated", "chinese_excerpt_saved",
+                "translation_started", "translation_failed"}
+            or state.get("chinese_post_id") != int(chinese_id)
+            or state.get("english_post_id") != int(english_id)
+            or hashes.get("chinese_excerpt") != sha256_text("")
+            or current_excerpt != expected_excerpt):
+        raise SafetyError("saved Chinese excerpt differs from resume evidence")
+    return True
+
+
 def validate_polylang(row, result):
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     expected = {
@@ -54,7 +70,8 @@ def validate_polylang(row, result):
     return result
 
 
-def special_validated_mixed_structure_eligible(analysis):
+def special_validated_mixed_structure_eligible(analysis,
+                                                expected_code_block_pro_count=1):
     """Return the narrow execution predicate for an already validated special batch.
 
     This does not replace normal Phase 1 admission.  It only describes the
@@ -66,8 +83,12 @@ def special_validated_mixed_structure_eligible(analysis):
         and analysis["blocks"]["has_block_comments"]
         and analysis["blocks"]["balanced"]
         and analysis["syntaxhighlighter_count"] == 0
-        and analysis["code_block_pro_count"] > 0
-        and set(analysis["code_format_families"]) == {"code-block-pro"}
+        and analysis["code_block_pro_count"] >= expected_code_block_pro_count
+        and (
+            set(analysis["code_format_families"]) == {"code-block-pro"}
+            if expected_code_block_pro_count else
+            not set(analysis["code_format_families"])
+        )
         and not analysis["shortcodes"]["damaged_outside_protected_ranges"]
         and "CLASSIC_SUBSTANTIAL_OUTSIDE_BLOCKS" not in analysis["matched_rule_ids"]
     )
@@ -87,6 +108,7 @@ def build_live(row, chinese, english, polylang, config,
     }, analysis)
     block_counts = analysis["blocks"]["counts"]
     polylang = validate_polylang(row, polylang)
+    expected_cbp = int(row.get("expected_code_block_pro_count", 1) or 0)
     return {
         "chinese_exists": True, "chinese_status": chinese.get("status"),
         "chinese_language": polylang["chinese_language"],
@@ -96,7 +118,7 @@ def build_live(row, chinese, english, polylang, config,
         "has_code_block_pro": block_counts.get("kevinbatdorf/code-block-pro", 0) > 0,
         "phase1_eligible": eligibility["eligible"],
         "special_mixed_structure_eligible": (
-            special_validated_mixed_structure_eligible(analysis)
+            special_validated_mixed_structure_eligible(analysis, expected_cbp)
             if special_validated_mixed else False),
         "linked_english_post_id": polylang["linked_english_post_id"],
         "english_status": english.get("status"),
@@ -132,7 +154,8 @@ def reconcile_translation_started(row, chinese, english):
 
 
 def preflight_live_result(row, wp, polylang_checker, config, resume=False,
-                          recovery_restart=None, special_validated_mixed=False):
+                          recovery_restart=None, resume_evidence=None,
+                          special_validated_mixed=False):
     """Perform exactly two GETs and return metadata/hashes only, never post text."""
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     chinese = wp.get_post(zh_id)
@@ -180,13 +203,20 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
     syntaxhighlighter_count = analysis["syntaxhighlighter_count"]
     expected_code_block_pro_count = row.get("expected_code_block_pro_count")
     expected_syntaxhighlighter_count = row.get("expected_syntaxhighlighter_count")
+    requires_code_block_pro = (
+        expected_code_block_pro_count in (None, "")
+        or int(expected_code_block_pro_count) > 0)
+    expected_cbp_for_structure = int(expected_code_block_pro_count or 0)
     special_structure_checks = {
         "gutenberg": analysis["editor_format"] == "gutenberg"
         and analysis["blocks"]["has_block_comments"]
         and analysis["blocks"]["balanced"],
         "syntaxhighlighter_removed": analysis["syntaxhighlighter_count"] == 0,
-        "code_block_pro_present": analysis["code_block_pro_count"] > 0,
-        "code_format_clean": set(analysis["code_format_families"]) == {"code-block-pro"},
+        "code_block_pro_count": code_block_pro_count >= expected_cbp_for_structure,
+        "code_format_clean": (
+            set(analysis["code_format_families"]) == {"code-block-pro"}
+            if expected_cbp_for_structure else
+            not set(analysis["code_format_families"])),
         "classic_structure_clean": (
             "CLASSIC_SUBSTANTIAL_OUTSIDE_BLOCKS" not in analysis["matched_rule_ids"]),
         "shortcode_structure_clean": (
@@ -206,7 +236,8 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
         "chinese_title_matches": title == row["chinese_title"],
         "chinese_content_sha256_matches": sha256_text(content) == row["chinese_content_sha256"],
         "gutenberg": analysis["blocks"]["has_block_comments"],
-        "code_block_pro": code_block_pro_count > 0,
+        "code_block_pro": (
+            code_block_pro_count > 0 if requires_code_block_pro else True),
         "expected_code_block_pro_count": (
             expected_code_block_pro_count in (None, "")
             or code_block_pro_count == int(expected_code_block_pro_count)
@@ -221,6 +252,10 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
         else eligibility["eligible"]
     )
     if resume:
+        if resume_evidence is None:
+            raise SafetyError("resume preflight evidence is required")
+        state, backup = resume_evidence
+        validate_resume_excerpt(state, backup, zh_id, en_id, zh_excerpt)
         checks["chinese_excerpt_empty"] = True
     if recovery_restart is not None:
         state, backup = recovery_restart
@@ -243,6 +278,9 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
     }
     for evidence in target_sha256.values():
         evidence["drift"] = evidence["current"] != evidence["execution_candidate_baseline"]
+    if resume:
+        checks["english_target_unchanged"] = not any(
+            evidence["drift"] for evidence in target_sha256.values())
     return {
         "mode": "preflight-live", "chinese_post_id": zh_id, "english_post_id": en_id,
         "returned_ids": {"chinese_correct": chinese.get("id") == zh_id,

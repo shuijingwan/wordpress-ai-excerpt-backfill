@@ -58,6 +58,16 @@ def main(argv=None):
         from src.wordpress_clients import WordPressRestClient
         config = json.loads((ROOT / "config/classification.json").read_text(encoding="utf-8"))
         recovery_restart = None
+        resume_evidence = None
+        if args.resume:
+            state_path = args.backup_dir / f"chinese-{args.post_id}.execution.json"
+            backup_path = args.backup_dir / f"chinese-{args.post_id}.pre-write.json"
+            try:
+                resume_evidence = (
+                    json.loads(state_path.read_text(encoding="utf-8")),
+                    json.loads(backup_path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeError, json.JSONDecodeError) as error:
+                raise SafetyError(f"invalid resume evidence: {error}") from error
         if args.recovery_restart:
             state_path = args.backup_dir / f"chinese-{args.post_id}.execution.json"
             backup_path = args.backup_dir / f"chinese-{args.post_id}.pre-write.json"
@@ -70,6 +80,7 @@ def main(argv=None):
         result = preflight_live_result(
             row, WordPressRestClient(), PolylangSshChecker(), config,
             resume=args.resume, recovery_restart=recovery_restart,
+            resume_evidence=resume_evidence,
             special_validated_mixed=args.special_validated_mixed)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["preflight_passed"] else 1

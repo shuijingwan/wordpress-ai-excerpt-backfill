@@ -108,6 +108,8 @@ def validate_live(row, live, resume=False, special_validated_mixed=False):
         "special_mixed_structure_ineligible"
         if special_validated_mixed else "phase1_ineligible"
     )
+    requires_code_block_pro = int(
+        row.get("expected_code_block_pro_count", 1) or 0) > 0
     checks = (
         (live.get("chinese_exists") is True, "chinese_missing"),
         (live.get("chinese_status") == "publish", "chinese_not_published"),
@@ -116,7 +118,8 @@ def validate_live(row, live, resume=False, special_validated_mixed=False):
         (live.get("chinese_title") == row["chinese_title"], "chinese_title_changed"),
         (live.get("chinese_content_sha256") == row["chinese_content_sha256"], "chinese_content_changed"),
         (live.get("is_gutenberg") is True, "not_gutenberg"),
-        (live.get("has_code_block_pro") is True, "no_code_block_pro"),
+        (not requires_code_block_pro or live.get("has_code_block_pro") is True,
+         "no_code_block_pro"),
         (execution_eligibility, eligibility_reason),
         (int(live.get("linked_english_post_id") or 0) == int(row["english_post_id"]), "english_relation_changed"),
         (live.get("english_status") == "publish", "english_not_published"),

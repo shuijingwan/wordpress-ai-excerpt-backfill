@@ -174,17 +174,7 @@ def _historical_exclusions(repository_root):
 
 def _eligible(preview, post, relation, analysis):
     return (
-        preview["preview_reasons"] == "editor-format-mixed"
-        and preview["preview_status"] == "abnormal"
-        and preview["editor_format"] == "mixed"
-        and _true(preview["chinese_excerpt_empty"])
-        and preview["english_status"] == "publish"
-        and int(preview["syntaxhighlighter_count"]) >= 1
-        and _true(preview["syntaxhighlighter_balanced"])
-        and int(preview["code_block_pro_count"]) == 0
-        and not _true(preview["mixed_code_formats"])
-        and not _true(preview["old_phase1_manifest_member"])
-        and post.get("post_type") == "post"
+        post.get("post_type") == "post"
         and post.get("post_status") == "publish"
         and post.get("language_source") == "polylang"
         and post.get("language") == "zh"
@@ -193,12 +183,6 @@ def _eligible(preview, post, relation, analysis):
         and relation.get("has_english_translation") is True
         and relation.get("english_post_status") == "publish"
         and int(preview["english_post_id"]) == int(relation["english_post_id"])
-        and analysis["editor_format"] == "mixed"
-        and analysis["syntaxhighlighter_count"] >= 1
-        and analysis["syntaxhighlighter_balanced"]
-        and analysis["syntaxhighlighter_attributes_valid"]
-        and analysis["code_block_pro_count"] == 0
-        and not analysis["mixed_code_formats"]
     )
 
 
@@ -366,7 +350,7 @@ def build_batch(preview_path, raw_paths, translations_path, output_path,
             "batch_expected_count": len(selected),
             "allocated_at": timestamp,
             "source_type": SOURCE_TYPE,
-            "source_editor_format": SOURCE_EDITOR_FORMAT,
+            "source_editor_format": analysis["editor_format"],
             "target_editor_format": TARGET_EDITOR_FORMAT,
             "source_migration_type": SOURCE_MIGRATION_TYPE,
             "snapshot_id": snapshot_id,
@@ -396,7 +380,7 @@ def build_batch(preview_path, raw_paths, translations_path, output_path,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Build one Mixed Gutenberg + SyntaxHighlighter fixed batch")
+        description="Build one fixed history-migration batch")
     parser.add_argument("--preview", required=True, type=Path)
     parser.add_argument("--translations", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)

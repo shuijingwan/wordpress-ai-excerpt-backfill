@@ -235,7 +235,6 @@ def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
     if source_type in MIXED_SYNTAX_SOURCE_TYPES:
         expected_values = {
             "source_type": source_type,
-            "source_editor_format": "mixed",
             "target_editor_format": "gutenberg",
             "source_migration_type": MIXED_SOURCE_MIGRATION_TYPE,
         }
@@ -243,6 +242,11 @@ def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
             if any(row.get(field, "").strip() != expected for row in rows):
                 raise ReadError(
                     f"{path}: {field} must be {expected!r} in every row")
+        allowed_source_editors = {"classic", "gutenberg", "mixed", "unknown"}
+        if any(row.get("source_editor_format", "").strip()
+               not in allowed_source_editors for row in rows):
+            raise ReadError(
+                f"{path}: source_editor_format must be a known editor format")
         for position, row in enumerate(rows, 1):
             content_sha256 = row.get("content_sha256", "").strip()
             if not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
@@ -1404,9 +1408,9 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
                    gutenberg_normalization_confirmed=False):
     if not language_review_confirmed:
         raise ReadError("--language-review-confirmed is required")
-    if syntax_count_before < 1 or cbp_count_after < 0:
+    if syntax_count_before < 0 or cbp_count_after < 0:
         raise ReadError(
-            "SyntaxHighlighter count must be positive and Code Block Pro "
+            "SyntaxHighlighter count and Code Block Pro "
             "count must be non-negative")
     with InitLock(Path(root).resolve()):
         root, batches, fixed, _, states = _context(root)
@@ -1602,7 +1606,8 @@ def _validation_result(path, batch, article, state):
     if batch["source_type"] in MIXED_SYNTAX_SOURCE_TYPES:
         checks.update({
             "before_editor_format":
-                _validation_text(row, "before_editor_format", path) == "mixed",
+                _validation_text(row, "before_editor_format", path)
+                == article["source_row"].get("source_editor_format", ""),
             "after_editor_format":
                 _validation_text(row, "after_editor_format", path) == "gutenberg",
             "classic_outside_blocks_after":
@@ -2373,8 +2378,21 @@ def _special_validated_mixed_execution_allowed(batch, state):
     """Gate the exception on the special batch's completed read-only workflow."""
     evidence = state.get("validation_evidence") or {}
     return bool(
-        batch.get("source_type") == "mixed_syntaxhighlighter_special"
+        batch.get("source_type") in MIXED_SYNTAX_SOURCE_TYPES
         and state.get("workflow_status") == "ready_for_execution"
+        and state.get("manual_conversion", {}).get("status") == "confirmed"
+        and state.get("gutenberg_normalization", {}).get("status") == "confirmed"
+        and state.get("language_review", {}).get("status") == "confirmed"
+        and evidence.get("status") == "ready"
+        and not evidence.get("failure_reasons")
+    )
+
+
+def _special_validated_mixed_recovery_allowed(batch, state):
+    """Keep the current validated-mixed safety boundary during resume/recovery."""
+    evidence = state.get("validation_evidence") or {}
+    return bool(
+        batch.get("source_type") in MIXED_SYNTAX_SOURCE_TYPES
         and state.get("manual_conversion", {}).get("status") == "confirmed"
         and state.get("gutenberg_normalization", {}).get("status") == "confirmed"
         and state.get("language_review", {}).get("status") == "confirmed"
@@ -2415,7 +2433,7 @@ def _run_items(root, batch_id=None, post_id=None):
                 reasons.append("recovery generation requires explicit matching --post-id")
             if _manifest_for(root, state) is None:
                 reasons.append("single-candidate execution manifest is missing")
-            if (batch.get("source_type") == "mixed_syntaxhighlighter_special"
+            if (batch.get("source_type") in MIXED_SYNTAX_SOURCE_TYPES
                     and not _special_validated_mixed_execution_allowed(batch, state)):
                 reasons.append("special batch requires passed read-only validation")
             try:
@@ -2644,15 +2662,17 @@ RESUME_STATUSES = {
 }
 
 
-def _resume_items(root, batch_id=None, post_id=None):
+def _resume_items(root, batch_id=None, post_id=None, allow_blocked=False):
     root, batches, _, _, states = _context(root)
+    batches_by_id = {batch["batch_id"]: batch for batch in batches}
+    resumable_statuses = RESUME_STATUSES | ({"blocked"} if allow_blocked else set())
     items = []
     for batch in _select_batch(batches, batch_id):
         for article in batch["articles"]:
             if post_id is not None and article["chinese_post_id"] != int(post_id):
                 continue
             state = states.get(article["chinese_post_id"])
-            if not state or state["workflow_status"] not in RESUME_STATUSES:
+            if not state or state["workflow_status"] not in resumable_statuses:
                 continue
             execution = _execution_details(root, article)
             reasons = []
@@ -2674,14 +2694,16 @@ def _resume_items(root, batch_id=None, post_id=None):
                 "batch_id": batch["batch_id"], "post_id": article["chinese_post_id"],
                 "english_post_id": article["english_post_id"],
                 "resume_mode": resume_mode, "attempts": attempts,
+                "special_validated_mixed": _special_validated_mixed_recovery_allowed(
+                    batches_by_id[batch["batch_id"]], state),
                 "allowed": not reasons, "blocking_reasons": reasons,
             })
     return root, items
 
 
 def resume(root, execute=False, batch_id=None, post_id=None,
-           runner=subprocess.run):
-    root, items = _resume_items(root, batch_id, post_id)
+           runner=subprocess.run, allow_blocked=False):
+    root, items = _resume_items(root, batch_id, post_id, allow_blocked=allow_blocked)
     if not execute:
         return {
             "schema_version": SCHEMA_VERSION, "mode": "preview",
@@ -2696,7 +2718,10 @@ def resume(root, execute=False, batch_id=None, post_id=None,
             state = states.get(item["post_id"])
             attempt = None
             try:
-                if not item["allowed"] or state["workflow_status"] not in RESUME_STATUSES:
+                resumable_statuses = RESUME_STATUSES | (
+                    {"blocked"} if allow_blocked else set())
+                if (not item["allowed"]
+                        or state["workflow_status"] not in resumable_statuses):
                     if "resume retry limit exhausted" in item["blocking_reasons"]:
                         _block_retry_exhausted(root, state, "resume")
                     raise ReadError("; ".join(item["blocking_reasons"])
@@ -2704,7 +2729,9 @@ def resume(root, execute=False, batch_id=None, post_id=None,
                 before = _execution_details(root, fixed[item["post_id"]])
                 attempt = _record_attempt_start(root, state, "resume")
                 preflight = runner(
-                    _executor_command(root, state, resume=True, preflight=True),
+                    _executor_command(
+                        root, state, resume=True, preflight=True,
+                        special_validated_mixed=item["special_validated_mixed"]),
                     cwd=root, text=True, capture_output=True, check=False,
                     timeout=180)
                 if preflight.returncode != 0:
@@ -2718,7 +2745,9 @@ def resume(root, execute=False, batch_id=None, post_id=None,
                         **_failure_details(failure)))
                     continue
                 completed = runner(
-                    _executor_command(root, state, resume=True),
+                    _executor_command(
+                        root, state, resume=True,
+                        special_validated_mixed=item["special_validated_mixed"]),
                     cwd=root, text=True, capture_output=True, check=False,
                     timeout=900)
                 execution = _execution_details(root, fixed[item["post_id"]])
@@ -3471,6 +3500,8 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
     if state is None:
         raise ReadError(f"coordination state is missing for Chinese post {post_id}")
     batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
+    special_validated_mixed = _special_validated_mixed_recovery_allowed(
+        batch, state)
     execution_path = _execution_path(root, post_id)
     prewrite_path = _prewrite_path(root, post_id)
     reasons = []
@@ -3541,7 +3572,7 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         live = build_live(
             old_manifest, chinese, english,
             source.check(article["chinese_post_id"], article["english_post_id"]),
-            config)
+            config, special_validated_mixed=special_validated_mixed)
     except (SafetyError, OSError, UnicodeError, json.JSONDecodeError) as error:
         reasons.append(f"production read-only check failed: {error}")
         return root, article, state, execution, prewrite, None, reasons
@@ -3574,7 +3605,9 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         "chinese_excerpt_known_for_restart": (
             current_excerpt_empty if recovery_kind == "rejected_excerpt_regeneration"
             else current_excerpt_empty or current_matches_old_generated),
-        "phase1_eligible": live["phase1_eligible"],
+        "execution_eligibility": (
+            live["special_mixed_structure_eligible"]
+            if special_validated_mixed else live["phase1_eligible"]),
     }
     old_hashes = prewrite.get("sha256") if isinstance(prewrite.get("sha256"), dict) else {}
     current_title_sha = sha256_text(live["chinese_title"])
@@ -3592,12 +3625,14 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
             rejected_evidence) and len(rejected_evidence) == len(
                 execution.get("rejected_excerpt_paths") or [])
     else:
-        checks["chinese_source_changed"] = source_changed
+        checks["chinese_source_unchanged"] = not source_changed
     checks.update({
         f"english_{field}_unchanged": live[f"english_{field}_sha256"] == old_hashes.get(f"english_{field}")
         for field in ("title", "excerpt", "content")
     })
-    reasons.extend(name for name, passed in checks.items() if not passed)
+    reasons.extend(
+        name for name, passed in checks.items()
+        if not passed and name != "chinese_source_unchanged")
     current = {
         "live": live, "checks": checks, "manifest_path": manifest_path,
         "old_manifest": old_manifest,
@@ -3873,7 +3908,7 @@ def recover(root, post_id, execute=False, source_factory=None,
     unavailable = any("production_readonly_unavailable" in reason
                       for reason in reasons)
     source_changed = bool(
-        current and current["checks"].get("chinese_source_changed"))
+        current and not current["checks"].get("chinese_source_unchanged", True))
     execution_status = _normalized_execution_status(
         execution.get("status")) if execution else None
     strategy = "blocked"
@@ -3893,15 +3928,15 @@ def recover(root, post_id, execute=False, source_factory=None,
     elif execution_status in {
             "chinese_excerpt_saved", "translation_started",
             "translation_failed"} and not source_changed:
-        ignored = {"chinese_source_changed"}
+        ignored = {"chinese_source_unchanged"}
         remaining = [reason for reason in reasons if reason not in ignored]
         if not remaining and state["workflow_status"] in {
-                "ready_for_translation_resume", "translation_failed"}:
+                "blocked", "ready_for_translation_resume", "translation_failed"}:
             strategy, strategy_reasons = "resume", [
-                "production Chinese title and content match the pre-write baseline"]
+                "execution evidence is translation-failed and all recovery checks pass"]
     elif source_changed:
         remaining = [reason for reason in reasons
-                     if reason != "chinese_source_changed"]
+                     if reason != "chinese_source_unchanged"]
         if not remaining:
             strategy, strategy_reasons = "restart_from_current", [
                 "production Chinese title or content changed after pre-write"]
@@ -3945,7 +3980,7 @@ def recover(root, post_id, execute=False, source_factory=None,
     else:
         operation = resume(
             root, execute=True, batch_id=state["batch_id"], post_id=post_id,
-            runner=runner)
+            runner=runner, allow_blocked=True)
     item = operation["results"][0] if operation.get("results") else None
     _, _, _, _, fresh_states = _context(root)
     final_status = fresh_states[int(post_id)]["workflow_status"]
@@ -4312,6 +4347,15 @@ def render_recover_text(result):
                 "next_step", "无" if result["final_status"] == "completed"
                 else "; ".join(result["strategy_reasons"])),
         ])
+        operation_result = result.get("operation_result") or {}
+        if result["reexecution"] != "completed":
+            failure_summary = (
+                operation_result.get("stderr_summary")
+                or operation_result.get("stdout_summary")
+                or operation_result.get("error")
+            )
+            if failure_summary:
+                lines.append(f"子进程失败摘要: {failure_summary}")
     if result["strategy"] == "blocked" and result["mode"] != "preview":
         lines.append("原因: " + "; ".join(result["strategy_reasons"]))
     return "\n".join(lines)

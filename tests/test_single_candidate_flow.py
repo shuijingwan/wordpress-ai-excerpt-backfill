@@ -266,8 +266,12 @@ class SingleCandidateFlowTest(unittest.TestCase):
     def test_resume_preflight_reports_observed_nonempty_excerpt(self):
         wp = MockWp()
         wp.posts[1]["excerpt"]["raw"] = VALID_EXCERPT
+        evidence = ({"status": "translation_failed", "chinese_post_id": 1,
+                     "english_post_id": 1001, "generated_excerpt": VALID_EXCERPT},
+                    {"sha256": {"chinese_excerpt": digest("")}})
         result = preflight_live_result(
-            rows()[0], wp, MockPolylang(), CONFIG, resume=True)
+            rows()[0], wp, MockPolylang(), CONFIG, resume=True,
+            resume_evidence=evidence)
         self.assertTrue(result["preflight_passed"])
         self.assertFalse(result["chinese_excerpt_empty"])
         self.assertTrue(result["chinese_excerpt_check_bypassed_for_resume"])

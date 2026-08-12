@@ -119,7 +119,7 @@ class MixedSyntaxHighlighterBatchTest(unittest.TestCase):
             [2710, 4984, 5152, 5520, 12389],
             stats["explicit_abnormal_candidates_rejected"])
 
-    def test_requires_the_exact_mixed_only_preview_reason(self):
+    def test_business_eligible_candidate_is_not_filtered_by_preview_format(self):
         preview, post, relation = candidate(1)
         preview["preview_reasons"] = (
             "editor-format-mixed;mixed-code-formats:"
@@ -127,8 +127,8 @@ class MixedSyntaxHighlighterBatchTest(unittest.TestCase):
         )
         selected, stats = MODULE.select_candidates(
             [preview], {1: post}, {1: relation}, CONFIG, set(), set(), 20)
-        self.assertEqual([], selected)
-        self.assertEqual(0, stats["remaining_eligible_count"])
+        self.assertEqual([1], [int(item[0]["chinese_post_id"]) for item in selected])
+        self.assertEqual(1, stats["remaining_eligible_count"])
 
     def write_csv(self, path, rows):
         path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)

@@ -181,6 +181,18 @@ class SyntaxHighlighterBatchValidationTest(unittest.TestCase):
             "code-block-pro-count-below-expected",
             results[1]["validation_reasons"])
 
+    def test_clean_gutenberg_without_code_needs_no_content_change(self):
+        content = "<!-- wp:paragraph --><p>正文</p><!-- /wp:paragraph -->"
+        row = batch_row(1, before_sh=0, expected_cbp=0)
+        row.update({
+            "before_content_sha256": sha256_text(content),
+            "source_editor_format": "gutenberg",
+        })
+        source = Wp([row]); source.posts[1]["content"]["raw"] = content
+        result = self.validate([row], source)[0]
+        self.assertEqual("ready", result["validation_status"])
+        self.assertNotIn("content-hash-unchanged", result["validation_reasons"])
+
     def test_unknown_code_format_fails_even_when_cbp_meets_minimum(self):
         rows = [batch_row(1, 1, 1)]
         source = Wp(rows)

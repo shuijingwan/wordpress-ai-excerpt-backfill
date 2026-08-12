@@ -182,7 +182,11 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
     abnormal = []
     if after_sh:
         pending.append("syntaxhighlighter-remains")
-    if after_hash == row["before_content_sha256"]:
+    requires_content_change = (
+        int(row["before_syntaxhighlighter_count"]) > 0
+        or row.get("source_editor_format", "") != "gutenberg"
+    )
+    if requires_content_change and after_hash == row["before_content_sha256"]:
         pending.append("content-hash-unchanged")
     checks = (
         (chinese.get("id") == zh_id, "chinese-missing-or-id-mismatch"),

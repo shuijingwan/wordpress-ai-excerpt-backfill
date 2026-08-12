@@ -45,6 +45,21 @@ class Polylang:
 
 
 class PreflightLiveTest(unittest.TestCase):
+    @staticmethod
+    def resume_evidence(excerpt):
+        return (
+            {"status": "translation_failed", "chinese_post_id": 1,
+             "english_post_id": 1001, "generated_excerpt": excerpt},
+            {"sha256": {"chinese_excerpt": digest("")}},
+        )
+
+    @staticmethod
+    def saved_excerpt():
+        return (
+            "这是本流程已成功写入、可由执行证据精确验证的中文摘要内容，"
+            "恢复时必须严格比对该摘要、中文标题正文与英文目标基线，"
+            "从而确保不会把第三方修改误认为可安全继续的执行状态。")
+
     def write_manifest(self, directory):
         manifest_rows = rows()[:1]
         path = Path(directory) / "manifest.csv"
@@ -129,7 +144,7 @@ class PreflightLiveTest(unittest.TestCase):
         row["expected_code_block_pro_count"] = "1"
         row["expected_syntaxhighlighter_count"] = "0"
         result = preflight_live_result(row, MockWp(), Polylang(), CONFIG)
-        self.assertTrue(result["preflight_passed"])
+        self.assertTrue(result["preflight_passed"], result)
         self.assertEqual(1, result["structure"]["code_block_pro_count"])
         self.assertEqual(0, result["structure"]["syntaxhighlighter_count"])
 
@@ -166,6 +181,26 @@ class PreflightLiveTest(unittest.TestCase):
             special_validated_mixed=True)
         self.assertFalse(result["preflight_passed"])
         self.assertFalse(result["structure"]["expected_code_block_pro_count_matches"])
+
+    def test_validated_mixed_clean_gutenberg_without_code_can_preflight(self):
+        row = rows()[0]
+        content = "<!-- wp:paragraph --><p>正文</p><!-- /wp:paragraph -->"
+        row.update({
+            "chinese_content_sha256": digest(content),
+            "expected_code_block_pro_count": "0",
+            "expected_syntaxhighlighter_count": "0",
+        })
+        source = MockWp(); source.posts[1]["content"]["raw"] = content
+        excluded = {
+            "phase": "phase-1", "status": "excluded", "eligible": False,
+            "exclusion_reasons": ["EXCLUDE_NO_CODE_BLOCK_PRO"],
+        }
+        with mock.patch("src.single_candidate_flow.evaluate_phase1_eligibility",
+                        return_value=excluded):
+            result = preflight_live_result(
+                row, source, Polylang(), CONFIG, special_validated_mixed=True)
+        self.assertTrue(result["preflight_passed"])
+        self.assertTrue(result["structure"]["execution_eligibility"])
 
     def test_special_validated_mixed_ignores_shortcode_text_inside_code_block(self):
         row = rows()[0]
@@ -237,15 +272,62 @@ class PreflightLiveTest(unittest.TestCase):
         self.assertFalse(preflight_live_result(
             rows()[0], source, Polylang(), CONFIG)["preflight_passed"])
 
-    def test_resume_preflight_allows_expected_excerpt_and_english_changes(self):
+    def test_resume_preflight_rejects_english_target_drift(self):
         source = MockWp()
-        source.posts[1]["excerpt"]["raw"] = "已保存摘要"
+        excerpt = self.saved_excerpt()
+        source.posts[1]["excerpt"]["raw"] = excerpt
         source.posts[1001]["title"]["raw"] = "Translated title"
         source.posts[1001]["excerpt"]["raw"] = "Translated excerpt"
         source.posts[1001]["content"]["raw"] = "Translated content"
         result = preflight_live_result(
-            rows()[0], source, Polylang(), CONFIG, resume=True)
+            rows()[0], source, Polylang(), CONFIG, resume=True,
+            resume_evidence=self.resume_evidence(excerpt))
+        self.assertFalse(result["preflight_passed"])
+
+    def test_resume_preflight_allows_only_the_evidence_saved_excerpt(self):
+        source = MockWp(); excerpt = self.saved_excerpt()
+        source.posts[1]["excerpt"]["raw"] = excerpt
+        result = preflight_live_result(
+            rows()[0], source, Polylang(), CONFIG, resume=True,
+            resume_evidence=self.resume_evidence(excerpt))
         self.assertTrue(result["preflight_passed"])
+
+        source.posts[1]["excerpt"]["raw"] = excerpt + "外部修改"
+        with self.assertRaisesRegex(SafetyError, "resume evidence"):
+            preflight_live_result(
+                rows()[0], source, Polylang(), CONFIG, resume=True,
+                resume_evidence=self.resume_evidence(excerpt))
+
+    def test_resume_preflight_blocks_chinese_title_or_content_drift(self):
+        excerpt = self.saved_excerpt()
+        for field, value in (("title", "外部修改标题"),
+                             ("content", CONTENT + "外部修改")):
+            with self.subTest(field=field):
+                source = MockWp(); source.posts[1]["excerpt"]["raw"] = excerpt
+                source.posts[1][field]["raw"] = value
+                result = preflight_live_result(
+                    rows()[0], source, Polylang(), CONFIG, resume=True,
+                    resume_evidence=self.resume_evidence(excerpt))
+                self.assertFalse(result["preflight_passed"])
+
+    def test_validated_mixed_resume_uses_current_structure_not_phase1_history(self):
+        row = rows()[0]; row["expected_code_block_pro_count"] = "1"
+        row["expected_syntaxhighlighter_count"] = "0"
+        excerpt = self.saved_excerpt()
+        source = MockWp(); source.posts[1]["excerpt"]["raw"] = excerpt
+        excluded = {
+            "phase": "phase-1", "status": "excluded", "eligible": False,
+            "exclusion_reasons": ["EXCLUDE_MANUAL_REVIEW"],
+        }
+        with mock.patch("src.single_candidate_flow.evaluate_phase1_eligibility",
+                        return_value=excluded):
+            result = preflight_live_result(
+                row, source, Polylang(), CONFIG, resume=True,
+                resume_evidence=self.resume_evidence(excerpt),
+                special_validated_mixed=True)
+        self.assertTrue(result["preflight_passed"], result)
+        self.assertFalse(result["structure"]["phase1_eligible"])
+        self.assertTrue(result["structure"]["execution_eligibility"])
 
     def test_english_target_drift_is_reported_but_does_not_block_fresh_preflight(self):
         for field in ("title", "excerpt", "content"):
