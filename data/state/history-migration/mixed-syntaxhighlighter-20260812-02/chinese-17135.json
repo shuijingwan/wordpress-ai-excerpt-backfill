@@ -1,0 +1,78 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260812-02",
+  "batch_position": 15,
+  "blocked_reasons": [],
+  "chinese_post_id": 17135,
+  "english_post_id": 17159,
+  "execution_evidence": {
+    "sha256": "c0276965dea270e65cab682d5b92596d45d1454e566e27fc35d2665c26bd8536",
+    "source_file": "data/backups/single-candidate/chinese-17135.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-12T10:24:22.451261+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-12T10:20:03.532198+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-12T10:24:22.451261+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "error_summary": "",
+    "occurred_at": "2026-08-12T13:30:06.833360+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 484, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_field_translation_failed: Field translation failed: field=excerpt, unit_id=excerpt, reason=invalid_translation_assistant_reply. Diagnostic: /tmp/swq-glm52-field-error-summary.json\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-12T10:24:22.451261+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "retry_counts": {
+    "resume": 3,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260812-02.csv",
+  "source_batch_sha256": "b3e57042c300d2627999eb3bb5144bae5450b57c03140793a4196df2f6f6f66e",
+  "source_row_sha256": "46ea36a6769d18b16e0b8672b91ef570d824ad06df826df67a6dcff1dac76c59",
+  "updated_at": "2026-08-12T14:05:14.758905+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "3ddcc078d8acd0280058604c148a35afe513dd46c5a3fee23d108497eadbb3a9",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "29515ae30588d38fe9c47f7852d31ae805a56754eedfa12c1608d59fd853610f",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260812-02/chinese-17135.csv",
+    "status": "ready",
+    "validated_at": "2026-08-12T10:27:32.477605+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
