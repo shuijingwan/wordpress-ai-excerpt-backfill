@@ -309,9 +309,12 @@ def _gutenberg_code_content_ranges(content):
         name = _block_name(match.group("name"))
         if match.group("close"):
             if stack and stack[-1][0] == name:
-                opening_name, _, content_start = stack.pop()
+                opening_name, opening_start, _ = stack.pop()
                 if opening_name in protected_names:
-                    ranges.append((content_start, match.start()))
+                    # Protect the complete code block, including JSON
+                    # attributes on its opening comment. Code text in those
+                    # attributes may contain literal shortcode-looking tokens.
+                    ranges.append((opening_start, match.end()))
             continue
         if not match.group("self"):
             stack.append((name, match.start(), match.end()))
@@ -367,6 +370,7 @@ def _parse_shortcodes(content, config, add):
     counts = Counter()
     stack = []
     damaged = False
+    damaged_outside_protected_ranges = False
     for match in matches:
         name = match.group("name").lower()
         closing = match.group("close") == "[/"
@@ -379,6 +383,8 @@ def _parse_shortcodes(content, config, add):
                     add("SH_SHORTCODE", opening["start"], opening["end"])
             else:
                 damaged = True
+                if not _inside_ranges(match.start(), protected_ranges):
+                    damaged_outside_protected_ranges = True
                 add("SC_ORPHAN_CLOSE", match.start(), match.end())
                 if name in known_sh:
                     add("SH_DAMAGED", match.start(), match.end())
@@ -401,6 +407,8 @@ def _parse_shortcodes(content, config, add):
 
     for opening in stack:
         damaged = True
+        if not _inside_ranges(opening["start"], protected_ranges):
+            damaged_outside_protected_ranges = True
         add("SC_UNCLOSED", opening["start"], opening["end"])
         if opening["name"] in known_sh:
             add("SH_DAMAGED", opening["start"], opening["end"])
@@ -409,6 +417,7 @@ def _parse_shortcodes(content, config, add):
         "counts": dict(sorted(counts.items())),
         "total_count": sum(counts.values()),
         "damaged": damaged,
+        "damaged_outside_protected_ranges": damaged_outside_protected_ranges,
     }
 
 

@@ -72,6 +72,7 @@ PILOT_BATCH = {
 }
 SYNTAX_GLOB = "syntaxhighlighter-migration-batch-*.csv"
 MIXED_SYNTAX_GLOB = "mixed-syntaxhighlighter-migration-batch-*.csv"
+SPECIAL_MIXED_SYNTAX_GLOB = "mixed-syntaxhighlighter-special-batch-*.csv"
 DEFAULT_SYNTAX_BATCH_EXPECTED_COUNT = 20
 SYNTAX_BATCH_EXPECTED_COUNTS = {
     "syntaxhighlighter-20260722-01": 20,
@@ -97,6 +98,10 @@ MIXED_SYNTAX_FIXED_FIELDS = (
 )
 SYNTAX_SOURCE_TYPES = {
     "syntaxhighlighter_daily", "mixed_syntaxhighlighter_daily",
+    "mixed_syntaxhighlighter_special",
+}
+MIXED_SYNTAX_SOURCE_TYPES = {
+    "mixed_syntaxhighlighter_daily", "mixed_syntaxhighlighter_special",
 }
 MIXED_SOURCE_MIGRATION_TYPE = (
     "mixed-syntaxhighlighter-to-gutenberg-code-block-pro"
@@ -204,19 +209,32 @@ def _load_manifest_batch(root, definition):
     }
 
 
+def _mixed_batch_filename_contract(path, source_type):
+    if source_type == "mixed_syntaxhighlighter_daily":
+        prefix = "mixed-syntaxhighlighter-migration-batch-"
+        batch_prefix = "mixed-syntaxhighlighter-"
+    elif source_type == "mixed_syntaxhighlighter_special":
+        prefix = "mixed-syntaxhighlighter-special-batch-"
+        batch_prefix = "mixed-syntaxhighlighter-special-"
+    else:
+        raise ReadError(f"unsupported mixed source type: {source_type}")
+    suffix = path.name[len(prefix):-len(".csv")]
+    return batch_prefix + suffix
+
+
 def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
     rows, fields = _read_csv(path)
     required = (
         MIXED_SYNTAX_FIXED_FIELDS
-        if source_type == "mixed_syntaxhighlighter_daily"
+        if source_type in MIXED_SYNTAX_SOURCE_TYPES
         else SYNTAX_FIXED_FIELDS
     )
     _required(fields, required, path)
     if not rows:
         raise ReadError(f"{path}: fixed batch is empty")
-    if source_type == "mixed_syntaxhighlighter_daily":
+    if source_type in MIXED_SYNTAX_SOURCE_TYPES:
         expected_values = {
-            "source_type": "mixed_syntaxhighlighter_daily",
+            "source_type": source_type,
             "source_editor_format": "mixed",
             "target_editor_format": "gutenberg",
             "source_migration_type": MIXED_SOURCE_MIGRATION_TYPE,
@@ -245,12 +263,8 @@ def _load_syntax_batch(path, root, source_type="syntaxhighlighter_daily"):
     allocated = {row.get("allocated_at", "").strip() for row in rows}
     if len(batch_ids) != 1 or not next(iter(batch_ids)):
         raise ReadError(f"{path}: batch_id must be non-empty and identical in every row")
-    if source_type == "mixed_syntaxhighlighter_daily":
-        prefix = "mixed-syntaxhighlighter-migration-batch-"
-        expected_batch_id = (
-            "mixed-syntaxhighlighter-"
-            + path.name[len(prefix):-len(".csv")]
-        )
+    if source_type in MIXED_SYNTAX_SOURCE_TYPES:
+        expected_batch_id = _mixed_batch_filename_contract(path, source_type)
         if next(iter(batch_ids)) != expected_batch_id:
             raise ReadError(
                 f"{path}: batch_id must match filename: {expected_batch_id}")
@@ -324,7 +338,8 @@ def discover_batches(root, errors):
         return batches
     for pattern, source_type in (
             (SYNTAX_GLOB, "syntaxhighlighter_daily"),
-            (MIXED_SYNTAX_GLOB, "mixed_syntaxhighlighter_daily")):
+            (MIXED_SYNTAX_GLOB, "mixed_syntaxhighlighter_daily"),
+            (SPECIAL_MIXED_SYNTAX_GLOB, "mixed_syntaxhighlighter_special")):
         for path in sorted(analysis.glob(pattern), key=lambda item: item.name):
             if path.name.endswith(DERIVED_SUFFIXES):
                 continue
@@ -450,7 +465,9 @@ def _derived_batch_id(path, suffix):
     for prefix, batch_prefix in (
             ("syntaxhighlighter-migration-batch-", "syntaxhighlighter-"),
             ("mixed-syntaxhighlighter-migration-batch-",
-             "mixed-syntaxhighlighter-")):
+             "mixed-syntaxhighlighter-"),
+            ("mixed-syntaxhighlighter-special-batch-",
+             "mixed-syntaxhighlighter-special-")):
         if stem.startswith(prefix):
             return batch_prefix + stem[len(prefix):]
     return None
@@ -658,7 +675,7 @@ def _manual_evidence(batch, legacy_import):
             "manual_conversion": {"status": "not_recorded"},
             "language_review": {"status": "not_recorded"},
         }
-        if batch["source_type"] == "mixed_syntaxhighlighter_daily":
+        if batch["source_type"] in MIXED_SYNTAX_SOURCE_TYPES:
             evidence["gutenberg_normalization"] = {"status": "not_recorded"}
         return evidence
     if batch["source_type"] == "gutenberg_code_block_pro":
@@ -1399,7 +1416,7 @@ def mark_converted(root, post_id, syntax_count_before, cbp_count_after,
         batch = next(item for item in batches if item["batch_id"] == article["batch_id"])
         if batch["source_type"] not in SYNTAX_SOURCE_TYPES:
             raise ReadError("mark-converted only accepts SyntaxHighlighter daily batches")
-        mixed_stage = batch["source_type"] == "mixed_syntaxhighlighter_daily"
+        mixed_stage = batch["source_type"] in MIXED_SYNTAX_SOURCE_TYPES
         if mixed_stage and not gutenberg_normalization_confirmed:
             raise ReadError(
                 "--gutenberg-normalization-confirmed is required for mixed "
@@ -1582,7 +1599,7 @@ def _validation_result(path, batch, article, state):
             and _validation_int(row, "after_code_block_pro_count", path)
             >= manual_cbp,
     }
-    if batch["source_type"] == "mixed_syntaxhighlighter_daily":
+    if batch["source_type"] in MIXED_SYNTAX_SOURCE_TYPES:
         checks.update({
             "before_editor_format":
                 _validation_text(row, "before_editor_format", path) == "mixed",
@@ -1720,7 +1737,7 @@ def _execution_manifest_row(article, validation_row, source,
         "chinese_language": validation_row["chinese_language"],
         "source_migration_type": (
             MIXED_SOURCE_MIGRATION_TYPE
-            if source_type == "mixed_syntaxhighlighter_daily"
+            if source_type in MIXED_SYNTAX_SOURCE_TYPES
             else "syntaxhighlighter-to-code-block-pro"
         ),
         "expected_code_block_pro_count":
@@ -2262,7 +2279,8 @@ def _block_retry_exhausted(root, state, stage):
         state, event)
 
 
-def _executor_command(root, state, *, resume=False, preflight=False):
+def _executor_command(root, state, *, resume=False, preflight=False,
+                      special_validated_mixed=False):
     manifest = _manifest_for(root, state)
     if manifest is None:
         raise ReadError("single-candidate execution manifest is missing")
@@ -2282,6 +2300,8 @@ def _executor_command(root, state, *, resume=False, preflight=False):
     if (not resume and state.get("source_restart_recovery", {}).get("status")
             == "applied"):
         command.append("--recovery-restart")
+    if special_validated_mixed:
+        command.append("--special-validated-mixed")
     return command
 
 
@@ -2349,6 +2369,20 @@ def _select_batch(batches, batch_id):
     return selected
 
 
+def _special_validated_mixed_execution_allowed(batch, state):
+    """Gate the exception on the special batch's completed read-only workflow."""
+    evidence = state.get("validation_evidence") or {}
+    return bool(
+        batch.get("source_type") == "mixed_syntaxhighlighter_special"
+        and state.get("workflow_status") == "ready_for_execution"
+        and state.get("manual_conversion", {}).get("status") == "confirmed"
+        and state.get("gutenberg_normalization", {}).get("status") == "confirmed"
+        and state.get("language_review", {}).get("status") == "confirmed"
+        and evidence.get("status") == "ready"
+        and not evidence.get("failure_reasons")
+    )
+
+
 def _run_items(root, batch_id=None, post_id=None):
     root, batches, _, executions, states = _context(root)
     items = []
@@ -2381,6 +2415,9 @@ def _run_items(root, batch_id=None, post_id=None):
                 reasons.append("recovery generation requires explicit matching --post-id")
             if _manifest_for(root, state) is None:
                 reasons.append("single-candidate execution manifest is missing")
+            if (batch.get("source_type") == "mixed_syntaxhighlighter_special"
+                    and not _special_validated_mixed_execution_allowed(batch, state)):
+                reasons.append("special batch requires passed read-only validation")
             try:
                 _validation_still_valid(root, state)
             except ReadError as error:
@@ -2407,7 +2444,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
         }
     results = []
     with InitLock(root):
-        root, _, fixed, _, states = _context(root)
+        root, batches, fixed, _, states = _context(root)
+        batches_by_id = {batch["batch_id"]: batch for batch in batches}
         total = len(items)
         for index, item in enumerate(items, 1):
             state = states.get(item["post_id"])
@@ -2420,13 +2458,17 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                     raise ReadError("; ".join(item["blocking_reasons"])
                                     or "article is no longer ready")
                 _validation_still_valid(root, state)
+                special_validated_mixed = _special_validated_mixed_execution_allowed(
+                    batches_by_id[item["batch_id"]], state)
                 if int((state.get("retry_counts") or {}).get(
                         "run", 0)) >= max_run_attempts:
                     _block_retry_exhausted(root, state, "run")
                     raise ReadError("run retry limit exhausted")
                 try:
                     preflight = runner(
-                        _executor_command(root, state, preflight=True),
+                        _executor_command(
+                            root, state, preflight=True,
+                            special_validated_mixed=special_validated_mixed),
                         cwd=root, text=True, capture_output=True, check=False,
                         timeout=180)
                 except (OSError, subprocess.SubprocessError) as error:
@@ -2455,7 +2497,9 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                 before = _execution_details(root, fixed[item["post_id"]])
                 attempt = _record_attempt_start(root, state, "run")
                 completed = runner(
-                    _executor_command(root, state, resume=False),
+                    _executor_command(
+                        root, state, resume=False,
+                        special_validated_mixed=special_validated_mixed),
                     cwd=root, text=True, capture_output=True, check=False,
                     timeout=900)
                 try:
@@ -2986,6 +3030,10 @@ def run_ready(root, execute=False, batch_id=None, post_id=None, runner=subproces
                     "rerun the same run-ready --execute command later"
                     if final["category"] == "production_readonly_unavailable"
                     else "run recover for this post before continuing")
+                break
+            if final.get("phase") == "preflight":
+                # A completed preflight is a deterministic safety decision;
+                # retrying the same immutable candidate cannot make it pass.
                 break
             if progress:
                 progress("attempt_failed", index, total, item, final)

@@ -11,7 +11,9 @@ import subprocess
 
 from src.candidate_execution import SafetyError
 from src.polylang_ssh import PolylangSshChecker
-from src.single_candidate_flow import preflight_live_result, validate_polylang
+from src.single_candidate_flow import (preflight_live_result, validate_polylang,
+                                       special_validated_mixed_structure_eligible)
+from src.analyzer import analyze_content
 from src.wordpress_clients import WordPressRestClient
 from tests.test_single_candidate_flow import CONFIG, CONTENT, MockWp, digest, rows
 
@@ -134,6 +136,59 @@ class PreflightLiveTest(unittest.TestCase):
         row["expected_code_block_pro_count"] = "2"
         result = preflight_live_result(row, MockWp(), Polylang(), CONFIG)
         self.assertFalse(result["preflight_passed"])
+
+    def test_special_validated_mixed_uses_current_structure_not_phase1_history(self):
+        row = rows()[0]
+        row["expected_code_block_pro_count"] = "1"
+        row["expected_syntaxhighlighter_count"] = "0"
+        excluded = {
+            "phase": "phase-1", "status": "excluded", "eligible": False,
+            "exclusion_reasons": ["EXCLUDE_MANUAL_REVIEW"],
+        }
+        with mock.patch("src.single_candidate_flow.evaluate_phase1_eligibility",
+                        return_value=excluded):
+            ordinary = preflight_live_result(row, MockWp(), Polylang(), CONFIG)
+            special = preflight_live_result(
+                row, MockWp(), Polylang(), CONFIG,
+                special_validated_mixed=True)
+        self.assertFalse(ordinary["preflight_passed"])
+        self.assertFalse(ordinary["structure"]["phase1_eligible"])
+        self.assertTrue(special["preflight_passed"])
+        self.assertFalse(special["structure"]["phase1_eligible"])
+        self.assertTrue(special["structure"]["special_mixed_structure_eligible"])
+        self.assertTrue(special["structure"]["execution_eligibility"])
+
+    def test_special_validated_mixed_keeps_current_structure_checks(self):
+        row = rows()[0]
+        row["expected_code_block_pro_count"] = "2"
+        result = preflight_live_result(
+            row, MockWp(), Polylang(), CONFIG,
+            special_validated_mixed=True)
+        self.assertFalse(result["preflight_passed"])
+        self.assertFalse(result["structure"]["expected_code_block_pro_count_matches"])
+
+    def test_special_validated_mixed_ignores_shortcode_text_inside_code_block(self):
+        row = rows()[0]
+        row["expected_code_block_pro_count"] = "1"
+        row["expected_syntaxhighlighter_count"] = "0"
+        result = preflight_live_result(
+            row, MockWp(), Polylang(), CONFIG, special_validated_mixed=True)
+        self.assertTrue(result["preflight_passed"])
+        self.assertTrue(result["structure"]["special_mixed_structure_checks"][
+            "shortcode_structure_clean"])
+
+    def test_cbp_json_attribute_shortcode_text_is_not_current_damage(self):
+        content = (
+            '<!-- wp:kevinbatdorf/code-block-pro {"code":"\\nArray\\n(\\n'
+            '    [code] => 200\\n)"} -->'
+            '<div class="wp-block-kevinbatdorf-code-block-pro"><textarea></textarea>'
+            '<pre class="shiki"><code></code></pre></div>'
+            '<!-- /wp:kevinbatdorf/code-block-pro -->'
+        )
+        analysis = analyze_content(content, CONFIG)
+        self.assertTrue(analysis["shortcodes"]["damaged"])
+        self.assertFalse(analysis["shortcodes"]["damaged_outside_protected_ranges"])
+        self.assertTrue(special_validated_mixed_structure_eligible(analysis))
 
     def test_exactly_two_gets_zero_posts_and_no_sensitive_output(self):
         source = MockWp()

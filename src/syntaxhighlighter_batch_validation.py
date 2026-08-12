@@ -135,6 +135,7 @@ def inspect_code_block_pro(content):
             details.append({
                 "language": language.strip() if isinstance(language, str) else "",
                 "code_nonempty": bool(code.strip()),
+                "code_sha256": sha256_text(code),
                 "attributes_valid": attrs_valid,
                 "language_valid": language_valid,
             })
@@ -202,6 +203,13 @@ def validate_one(row, chinese, english, polylang, config, validated_at):
          "code-block-pro-attributes-invalid"),
     )
     abnormal.extend(reason for passed, reason in checks if not passed)
+    preserved_cbp_code = row.get("preserved_code_block_pro_code_sha256", "").strip()
+    if preserved_cbp_code:
+        code_hashes = [item["code_sha256"] for item in cbp["blocks"]]
+        if len(code_hashes) != len(set(code_hashes)):
+            abnormal.append("code-block-pro-duplicate-code")
+        if code_hashes.count(preserved_cbp_code) != 1:
+            abnormal.append("preserved-code-block-pro-not-present-once")
     if mixed_stage:
         if after_editor_format != "gutenberg":
             abnormal.append("editor-format-not-gutenberg")

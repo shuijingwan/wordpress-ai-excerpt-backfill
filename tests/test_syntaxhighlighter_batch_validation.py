@@ -246,6 +246,17 @@ class SyntaxHighlighterBatchValidationTest(unittest.TestCase):
         self.assertEqual("gutenberg", result["after_editor_format"])
         self.assertFalse(result["classic_outside_blocks_after"])
 
+    def test_preserved_code_block_pro_must_not_be_duplicated_or_lost(self):
+        row = batch_row(1, 1, 2)
+        row["preserved_code_block_pro_code_sha256"] = sha256_text("keep")
+        source = Wp([row])
+        source.posts[1]["content"]["raw"] = cbp("go", "keep") + cbp("php", "new")
+        self.assertEqual("ready", self.validate([row], source)[0]["validation_status"])
+        source.posts[1]["content"]["raw"] = cbp("go", "keep") + cbp("php", "keep")
+        result = self.validate([row], source)[0]
+        self.assertEqual("abnormal", result["validation_status"])
+        self.assertIn("code-block-pro-duplicate-code", result["validation_reasons"])
+
     def test_old_stage_does_not_require_editor_normalization(self):
         row = batch_row(1)
         source = Wp([row])

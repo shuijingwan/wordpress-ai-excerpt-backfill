@@ -138,6 +138,39 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.write_csv(path, MIXED_FIELDS, values)
         return path, batch_id
 
+    def write_special_mixed_batch(self, pairs):
+        path = (
+            self.root / "data/analysis"
+            / "mixed-syntaxhighlighter-special-batch-20260812-01.csv"
+        )
+        batch_id = "mixed-syntaxhighlighter-special-20260812-01"
+        values = [{
+            "schema_version": 1,
+            "batch_id": batch_id,
+            "batch_sequence": 1,
+            "batch_expected_count": len(pairs),
+            "allocated_at": "2026-08-12T00:00:00+00:00",
+            "chinese_post_id": chinese,
+            "english_post_id": english,
+            "chinese_title": f"标题 {chinese}",
+            "published_at": "2024-01-01 00:00:00",
+            "before_syntaxhighlighter_count": 2,
+            "before_code_block_pro_count": 0,
+            "expected_code_block_pro_count_after": 2,
+            "migration_status": "pending",
+            "validation_status": "not-checked",
+            "source_editor_format": "mixed",
+            "target_editor_format": "gutenberg",
+            "source_type": "mixed_syntaxhighlighter_special",
+            "source_migration_type":
+                "mixed-syntaxhighlighter-to-gutenberg-code-block-pro",
+            "content_sha256": "e" * 64,
+            "snapshot_id": "production-readonly-special-audit",
+            "snapshot_generated_at": "2026-08-12T00:00:00+00:00",
+        } for chinese, english in pairs]
+        self.write_csv(path, MIXED_FIELDS, values)
+        return path, batch_id
+
     def write_execution(self, chinese, english, status="completed", raw=None):
         path = (
             self.root / "data/backups/single-candidate"
@@ -436,6 +469,55 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             "confirmed", saved["gutenberg_normalization"]["status"])
         self.assertEqual("confirmed", saved["manual_conversion"]["status"])
         self.assertEqual("confirmed", saved["language_review"]["status"])
+
+    def test_special_mixed_batch_initializes_and_reuses_manual_conversion_flow(self):
+        self.write_execution(100, 1100)
+        self.write_execution(200, 1200)
+        _, batch_id = self.write_special_mixed_batch([
+            (2710, 11572), (4984, 14491), (5152, 14415),
+            (5520, 14235), (12389, 12394),
+        ])
+        result = MODULE.init_state(self.root, apply=True)
+        self.assertEqual(5, next(
+            item["created_count"] for item in result["batches"]
+            if item["batch_id"] == batch_id))
+        status = MODULE.build_status(self.root)
+        special = next(item for item in status["batches"] if item["batch_id"] == batch_id)
+        self.assertEqual("mixed_syntaxhighlighter_special", special["source_type"])
+        self.assertEqual({"awaiting_manual_conversion": 5}, special["coordination_status_counts"])
+        state = MODULE.mark_converted(
+            self.root, 2710, 2, 2, True,
+            gutenberg_normalization_confirmed=True)
+        self.assertEqual("awaiting_readonly_validation", state["workflow_status"])
+
+    def test_special_mixed_execution_gate_requires_recorded_ready_validation(self):
+        _, batch_id = self.write_special_mixed_batch([(4984, 14491)])
+        batch = next(item for item in MODULE._context(self.root)[1]
+                     if item["batch_id"] == batch_id)
+        state = {
+            "batch_id": batch_id,
+            "chinese_post_id": 4984,
+            "workflow_status": "awaiting_manual_conversion",
+        }
+        self.assertFalse(MODULE._special_validated_mixed_execution_allowed(batch, state))
+        state.update({
+            "workflow_status": "ready_for_execution",
+            "manual_conversion": {"status": "confirmed"},
+            "gutenberg_normalization": {"status": "confirmed"},
+            "language_review": {"status": "confirmed"},
+            "validation_evidence": {
+                "status": "ready", "failure_reasons": [],
+            },
+        })
+        self.assertTrue(MODULE._special_validated_mixed_execution_allowed(batch, state))
+        manifest = MODULE._validation_paths(self.root, batch_id, 4984)[2]
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text("manifest", encoding="utf-8")
+        command = MODULE._executor_command(
+            self.root, state, preflight=True, special_validated_mixed=True)
+        self.assertIn("--special-validated-mixed", command)
+        ordinary = dict(batch, source_type="mixed_syntaxhighlighter_daily")
+        self.assertFalse(MODULE._special_validated_mixed_execution_allowed(ordinary, state))
 
     def test_execution_manifest_distinguishes_migration_source(self):
         article = {
@@ -2284,6 +2366,24 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertNotIn("visible-secret", item["stdout_summary"])
         self.assertEqual("ready_for_execution", state["workflow_status"])
         self.assertEqual({}, state["retry_counts"])
+
+    def test_deterministic_preflight_failure_is_not_retried(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return mock.Mock(returncode=1, stdout="", stderr="phase1_ineligible")
+
+        result = MODULE.run_ready(
+            self.root, execute=True, runner=runner,
+            sleeper=lambda seconds: self.fail("deterministic preflight must not retry"))
+        self.assertEqual(1, len(calls))
+        self.assertEqual("preflight_failed", result["results"][0]["category"])
+        self.assertEqual(1, result["results"][0]["attempts"])
 
     def test_nested_readonly_255_stops_batch_without_outer_retry_or_state_write(self):
         self.prepare_converted()

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from src.candidate_execution import ExcerptValidationError, SafetyError
 from src.http_json import HttpJsonError
@@ -145,6 +146,23 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(1, state["excerpt_attempts"])
             self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
             self.assertEqual([(1, 1001)] * 3, polylang.calls)
+
+    def test_special_validated_mixed_flow_allows_only_its_current_structure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wp = MockWp(); glm = MockGlm(); translator = MockTranslator(wp)
+            flow = SingleCandidateFlow(
+                rows(), wp, glm, translator, MockPolylang(), directory, CONFIG,
+                special_validated_mixed=True)
+            excluded = {
+                "phase": "phase-1", "status": "excluded", "eligible": False,
+                "exclusion_reasons": ["EXCLUDE_MANUAL_REVIEW"],
+            }
+            with mock.patch("src.single_candidate_flow.evaluate_phase1_eligibility",
+                            return_value=excluded):
+                state = flow.execute(1)
+            self.assertEqual("completed", state["status"])
+            self.assertEqual(1, glm.calls)
+            self.assertEqual(1, translator.calls)
 
     def test_drifted_english_target_is_backed_up_before_glm_or_writes(self):
         with tempfile.TemporaryDirectory() as directory:

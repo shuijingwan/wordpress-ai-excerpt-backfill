@@ -111,11 +111,13 @@ class MixedSyntaxHighlighterBatchTest(unittest.TestCase):
 
     def test_excludes_completed_allocated_and_explicit_abnormal_ids_before_sorting(self):
         selected, stats = self.select(
-            [1, 2, 3, 4984], maximum=20,
+            [1, 2, 3, 2710, 4984, 5152, 5520, 12389], maximum=20,
             excluded_chinese={3}, excluded_english={1002})
         self.assertEqual(
             [1], [int(item[0]["chinese_post_id"]) for item in selected])
-        self.assertEqual([4984], stats["explicit_abnormal_candidates_rejected"])
+        self.assertEqual(
+            [2710, 4984, 5152, 5520, 12389],
+            stats["explicit_abnormal_candidates_rejected"])
 
     def test_requires_the_exact_mixed_only_preview_reason(self):
         preview, post, relation = candidate(1)

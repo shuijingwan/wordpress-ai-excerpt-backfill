@@ -98,8 +98,16 @@ def validate_manifest(rows, expected_count=EXPECTED_CANDIDATES):
     return True
 
 
-def validate_live(row, live, resume=False):
+def validate_live(row, live, resume=False, special_validated_mixed=False):
     """Return blocking source/identity failures; English hashes are audit baselines."""
+    execution_eligibility = (
+        live.get("special_mixed_structure_eligible") is True
+        if special_validated_mixed else live.get("phase1_eligible") is True
+    )
+    eligibility_reason = (
+        "special_mixed_structure_ineligible"
+        if special_validated_mixed else "phase1_ineligible"
+    )
     checks = (
         (live.get("chinese_exists") is True, "chinese_missing"),
         (live.get("chinese_status") == "publish", "chinese_not_published"),
@@ -109,7 +117,7 @@ def validate_live(row, live, resume=False):
         (live.get("chinese_content_sha256") == row["chinese_content_sha256"], "chinese_content_changed"),
         (live.get("is_gutenberg") is True, "not_gutenberg"),
         (live.get("has_code_block_pro") is True, "no_code_block_pro"),
-        (live.get("phase1_eligible") is True, "phase1_ineligible"),
+        (execution_eligibility, eligibility_reason),
         (int(live.get("linked_english_post_id") or 0) == int(row["english_post_id"]), "english_relation_changed"),
         (live.get("english_status") == "publish", "english_not_published"),
     )

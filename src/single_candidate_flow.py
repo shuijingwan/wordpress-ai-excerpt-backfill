@@ -54,7 +54,27 @@ def validate_polylang(row, result):
     return result
 
 
-def build_live(row, chinese, english, polylang, config):
+def special_validated_mixed_structure_eligible(analysis):
+    """Return the narrow execution predicate for an already validated special batch.
+
+    This does not replace normal Phase 1 admission.  It only describes the
+    current Gutenberg/Code Block Pro structure that the special batch's
+    read-only validator has already recorded and SHA-bound.
+    """
+    return bool(
+        analysis["editor_format"] == "gutenberg"
+        and analysis["blocks"]["has_block_comments"]
+        and analysis["blocks"]["balanced"]
+        and analysis["syntaxhighlighter_count"] == 0
+        and analysis["code_block_pro_count"] > 0
+        and set(analysis["code_format_families"]) == {"code-block-pro"}
+        and not analysis["shortcodes"]["damaged_outside_protected_ranges"]
+        and "CLASSIC_SUBSTANTIAL_OUTSIDE_BLOCKS" not in analysis["matched_rule_ids"]
+    )
+
+
+def build_live(row, chinese, english, polylang, config,
+               special_validated_mixed=False):
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     if chinese.get("id") != zh_id or english.get("id") != en_id:
         raise SafetyError("WordPress returned an unexpected post ID")
@@ -75,6 +95,9 @@ def build_live(row, chinese, english, polylang, config):
         "is_gutenberg": analysis["blocks"]["has_block_comments"],
         "has_code_block_pro": block_counts.get("kevinbatdorf/code-block-pro", 0) > 0,
         "phase1_eligible": eligibility["eligible"],
+        "special_mixed_structure_eligible": (
+            special_validated_mixed_structure_eligible(analysis)
+            if special_validated_mixed else False),
         "linked_english_post_id": polylang["linked_english_post_id"],
         "english_status": english.get("status"),
         "english_title_sha256": sha256_text(raw_field(english, "title")),
@@ -109,7 +132,7 @@ def reconcile_translation_started(row, chinese, english):
 
 
 def preflight_live_result(row, wp, polylang_checker, config, resume=False,
-                          recovery_restart=None):
+                          recovery_restart=None, special_validated_mixed=False):
     """Perform exactly two GETs and return metadata/hashes only, never post text."""
     zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
     chinese = wp.get_post(zh_id)
@@ -157,6 +180,19 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
     syntaxhighlighter_count = analysis["syntaxhighlighter_count"]
     expected_code_block_pro_count = row.get("expected_code_block_pro_count")
     expected_syntaxhighlighter_count = row.get("expected_syntaxhighlighter_count")
+    special_structure_checks = {
+        "gutenberg": analysis["editor_format"] == "gutenberg"
+        and analysis["blocks"]["has_block_comments"]
+        and analysis["blocks"]["balanced"],
+        "syntaxhighlighter_removed": analysis["syntaxhighlighter_count"] == 0,
+        "code_block_pro_present": analysis["code_block_pro_count"] > 0,
+        "code_format_clean": set(analysis["code_format_families"]) == {"code-block-pro"},
+        "classic_structure_clean": (
+            "CLASSIC_SUBSTANTIAL_OUTSIDE_BLOCKS" not in analysis["matched_rule_ids"]),
+        "shortcode_structure_clean": (
+            not analysis["shortcodes"]["damaged_outside_protected_ranges"]),
+    }
+    special_structure_eligible = all(special_structure_checks.values())
     checks = {
         "returned_ids_match": chinese.get("id") == zh_id and english.get("id") == en_id,
         "statuses_publish": chinese.get("status") == "publish" and english.get("status") == "publish",
@@ -179,8 +215,11 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
             expected_syntaxhighlighter_count in (None, "")
             or syntaxhighlighter_count == int(expected_syntaxhighlighter_count)
         ),
-        "phase1_eligible": eligibility["eligible"],
     }
+    checks["execution_eligibility"] = (
+        special_structure_eligible if special_validated_mixed
+        else eligibility["eligible"]
+    )
     if resume:
         checks["chinese_excerpt_empty"] = True
     if recovery_restart is not None:
@@ -248,7 +287,11 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
                           checks["expected_code_block_pro_count"],
                       "expected_syntaxhighlighter_count_matches":
                           checks["expected_syntaxhighlighter_count"],
-                      "phase1_eligible": checks["phase1_eligible"]},
+                      "phase1_eligible": eligibility["eligible"],
+                      "special_validated_mixed": special_validated_mixed,
+                      "special_mixed_structure_eligible": special_structure_eligible,
+                      "special_mixed_structure_checks": special_structure_checks,
+                      "execution_eligibility": checks["execution_eligibility"]},
         "request_counts": {"wordpress_get": 2, "ssh_readonly": 1,
                            "post": 0, "glm": 0, "translation": 0},
         "preflight_passed": all(checks.values()),
@@ -257,11 +300,12 @@ def preflight_live_result(row, wp, polylang_checker, config, resume=False,
 
 class SingleCandidateFlow:
     def __init__(self, manifest_rows, wp, glm, translator, polylang_checker, backup_dir, config,
-                 expected_candidate_count=42):
+                 expected_candidate_count=42, special_validated_mixed=False):
         self.rows = manifest_rows; self.wp = wp; self.glm = glm; self.translator = translator
         self.polylang_checker = polylang_checker
         self.backup_dir = Path(backup_dir); self.config = config
         self.expected_candidate_count = expected_candidate_count
+        self.special_validated_mixed = special_validated_mixed
 
     def _row(self, post_id):
         authorize_live_selection(
@@ -280,7 +324,9 @@ class SingleCandidateFlow:
         row = self._row(post_id); zh_id = int(row["chinese_post_id"]); en_id = int(row["english_post_id"])
         chinese = self.wp.get_post(zh_id); english = self.wp.get_post(en_id)
         initial_polylang = validate_polylang(row, self.polylang_checker.check(zh_id, en_id))
-        live = build_live(row, chinese, english, initial_polylang, self.config)
+        live = build_live(
+            row, chinese, english, initial_polylang, self.config,
+            special_validated_mixed=self.special_validated_mixed)
         state_path = self._state_path(zh_id)
 
         if resume:
@@ -311,7 +357,9 @@ class SingleCandidateFlow:
                 raise SafetyError("saved Chinese excerpt differs from resume state")
             # Resume deliberately does not require the original excerpt-empty check.
             live["chinese_excerpt_empty"] = True
-            failures = validate_live(row, live, resume=True)
+            failures = validate_live(
+                row, live, resume=True,
+                special_validated_mixed=self.special_validated_mixed)
             if failures:
                 raise SafetyError("resume live validation failed: " + ",".join(failures))
         else:
@@ -327,7 +375,8 @@ class SingleCandidateFlow:
                 # Only an explicitly prepared recovery generation may treat its
                 # exact pre-run excerpt as an allowed value for a new GLM run.
                 live["chinese_excerpt_empty"] = True
-            failures = validate_live(row, live)
+            failures = validate_live(
+                row, live, special_validated_mixed=self.special_validated_mixed)
             if failures:
                 raise SafetyError("live validation failed: " + ",".join(failures))
             if self.glm is None:

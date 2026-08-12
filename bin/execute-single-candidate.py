@@ -27,6 +27,8 @@ def parse_args(argv=None):
     mode.add_argument("--execute", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--recovery-restart", action="store_true")
+    parser.add_argument("--special-validated-mixed", action="store_true",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--expected-candidate-count", type=int, default=42)
@@ -67,7 +69,8 @@ def main(argv=None):
             recovery_restart = (state, backup)
         result = preflight_live_result(
             row, WordPressRestClient(), PolylangSshChecker(), config,
-            resume=args.resume, recovery_restart=recovery_restart)
+            resume=args.resume, recovery_restart=recovery_restart,
+            special_validated_mixed=args.special_validated_mixed)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0 if result["preflight_passed"] else 1
     if not args.execute:
@@ -98,7 +101,8 @@ def main(argv=None):
         glm_client = Glm47ExcerptClient()
     flow = SingleCandidateFlow(rows, wp_client, glm_client, translator_client,
                                polylang_checker, args.backup_dir, config,
-                               expected_candidate_count=args.expected_candidate_count)
+                               expected_candidate_count=args.expected_candidate_count,
+                               special_validated_mixed=args.special_validated_mixed)
     state = flow.execute(args.post_id, resume=args.resume)
     print(json.dumps({"chinese_post_id": args.post_id, "english_post_id": state["english_post_id"],
                       "status": state["status"]}, ensure_ascii=False, sort_keys=True))
