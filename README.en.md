@@ -2,9 +2,7 @@
 
 [简体中文](README.md)
 
-`wordpress-ai-excerpt-backfill` is a deterministic audit tool for historical Chinese WordPress posts. Its current purpose is to inventory editor and code formats, identify structural and translation risks, and establish a reviewable eligibility pipeline for a future excerpt backfill workflow.
-
-The project is not currently an excerpt generator or a WordPress write-back tool. Production access in this stage is read-only, explicitly bounded, and independently verifiable.
+`wordpress-ai-excerpt-backfill` is a deterministic audit, migration-coordination, and excerpt-backfill tool for historical Chinese WordPress posts. It uses fixed batches, production read-only validation, execution evidence, and recovery controls to complete migrations within strict safety boundaries.
 
 ## Current scope
 
@@ -27,22 +25,16 @@ Completed:
 - Protection against using the same file as both analyzer input and output, including symbolic and hard links.
 - Automated tests for format fixtures, eligibility, export contracts, and local analysis.
 - Controlled production export validations with batches of 3, 20, and 100 published Chinese posts. Exported files were downloaded locally and verified with SHA-256 before analysis.
+- The fixed historical migration scope is complete: 45 fixed batches and 857 articles, with `completed=857`, `failed=0`, `remaining=0`, and `integrity=ok`.
+- Every article in scope has a Chinese excerpt and completed English overwrite translation, with complete execution evidence and no unfinished batch.
+- Ordinary Mixed candidates are exhausted. The final five explicit exceptions completed through `mixed-syntaxhighlighter-special-20260812-01` (`total=5`, `completed=5`, `remaining=0`, `integrity=ok`).
 
-In progress:
+Final migration notes:
 
-- Expanding controlled historical samples.
-- Validating historical format boundaries and deterministic risk rules against real data.
-- Establishing which low-risk posts can safely enter a future excerpt-generation stage.
-
-Not implemented:
-
-- AI excerpt generation.
-- WordPress excerpt write-back.
-- Bulk article modification.
-- Automatic deployment of any WordPress write tool.
-- Translation generation or replacement.
-
-No WordPress post, excerpt, category, tag, database row, or cache has been modified by this project. No AI API has been called.
+1. Explicit exceptional candidates enter a fixed special batch, then reuse the normal history-migration state machine and evidence workflow.
+2. Code Block Pro protection covers an entire Gutenberg block, including its opening/closing comments and JSON attributes.
+3. Literal `[code]` text inside a CBP JSON `code` attribute is not an out-of-block shortcode or SyntaxHighlighter defect.
+4. A deterministic production preflight rejection does not retry the same candidate.
 
 ## Safety boundaries
 
@@ -55,7 +47,7 @@ No WordPress post, excerpt, category, tag, database row, or cache has been modif
 - Analyzer input and output must resolve to different files, including through symbolic or hard links.
 - Formal outputs are written through a temporary file, flushed and synchronized with `flush` and `fsync`, then atomically renamed.
 - Production exports and local analysis results are excluded from Git through `.gitignore`.
-- There is no database write operation, WordPress update operation, summary generation, translation operation, or AI API integration in the current codebase.
+- Writes occur only through an explicit, fixed-manifest `--execute` single-article flow, with SHA-256, Polylang, publish-status, content-structure, and execution-evidence checks before and after execution.
 
 ## Production layout
 
@@ -133,10 +125,4 @@ The expected count must match the bounded export. Input and output must be diffe
 
 ## Next steps
 
-- Continue expanding read-only samples and validate historical format distributions.
-- Review mixed, unknown, damaged, and SyntaxHighlighter content before migration.
-- Confirm the low-risk eligibility boundary for future excerpt candidates.
-- Design excerpt generation and WordPress write-back as separate later-stage workflows.
-- Before any write stage, add explicit backups, dry-run behavior, idempotency, conflict detection, and rollback procedures.
-
-No write-back command should be added or used until those safeguards have been designed, implemented, and independently validated.
+The historical migration has converged. Any future scope must use a new explicit fixed audit and execution plan; the completed state of these 857 articles must not be altered.
