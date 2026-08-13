@@ -3478,6 +3478,100 @@ def recover_blocked(root, post_id, apply=False):
         }
 
 
+def _manual_external_completion_plan(root, post_id, source_factory=None):
+    """Read only the facts an operator confirms after external completion."""
+    from src.batch_readonly_ssh import BatchReadonlySshSource
+
+    root, _, fixed, _, states = _context(Path(root).resolve())
+    article = fixed.get(int(post_id))
+    if article is None:
+        raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+    state = states.get(int(post_id))
+    if state is None:
+        raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+    reasons = []
+    if state["workflow_status"] == "completed":
+        reasons.append("article is already completed")
+        return root, article, state, reasons
+    if state["workflow_status"] not in {"translation_failed", "blocked"}:
+        reasons.append(
+            f"workflow_status {state['workflow_status']} is not eligible for manual completion")
+    try:
+        source = (source_factory([article["source_row"]]) if source_factory else
+                  BatchReadonlySshSource.fetch([article["source_row"]]))
+        chinese = source.get_post(article["chinese_post_id"])
+        english = source.get_post(article["english_post_id"])
+        relation = source.check(article["chinese_post_id"], article["english_post_id"])
+    except (SafetyError, OSError) as error:
+        reasons.append(f"production read-only check failed: {error}")
+        return root, article, state, reasons
+    checks = (
+        (chinese.get("id") == article["chinese_post_id"], "chinese post ID mismatch"),
+        (english.get("id") == article["english_post_id"], "english post ID mismatch"),
+        (chinese.get("status") == "publish", "Chinese post is not publish"),
+        (english.get("status") == "publish", "English post is not publish"),
+        (isinstance(relation, dict)
+         and relation.get("chinese_post_id") == article["chinese_post_id"]
+         and relation.get("chinese_language") == "zh"
+         and relation.get("linked_english_post_id") == article["english_post_id"]
+         and relation.get("english_post_id") == article["english_post_id"]
+         and relation.get("english_language") == "en"
+         and relation.get("linked_chinese_post_id") == article["chinese_post_id"],
+         "Polylang relation mismatch"),
+        (bool(_raw_post_field(english, "title").strip()), "English title is empty"),
+        (bool(_raw_post_field(english, "content").strip()), "English content is empty"),
+    )
+    reasons.extend(reason for passed, reason in checks if not passed)
+    return root, article, state, reasons
+
+
+def _raw_post_field(post, field):
+    value = post.get(field)
+    if isinstance(value, dict):
+        value = value.get("raw")
+    return value if isinstance(value, str) else ""
+
+
+def mark_manual_completed(root, post_id, confirmed=False, source_factory=None):
+    """Confirm an externally completed translation without altering execution evidence."""
+    root, article, state, reasons = _manual_external_completion_plan(
+        root, post_id, source_factory)
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "confirmed" if confirmed else "preview",
+        "repository_root": str(root), "batch_id": state["batch_id"],
+        "chinese_post_id": int(post_id), "english_post_id": article["english_post_id"],
+        "previous_status": state["workflow_status"], "new_status": "completed",
+        "eligible": not reasons, "blocking_reasons": reasons,
+        "changed": False, "writes_performed": False, "integrity_ok": True,
+    }
+    if not confirmed or reasons:
+        return result
+    with InitLock(root):
+        root, article, state, reasons = _manual_external_completion_plan(
+            root, post_id, source_factory)
+        if reasons:
+            return {**result, "eligible": False, "blocking_reasons": reasons}
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        state["workflow_status"] = "completed"
+        state["manual_completion"] = {
+            "status": "confirmed", "method": "manual_external",
+            "confirmed_at": timestamp,
+        }
+        state["updated_at"] = timestamp
+        event = _transition_event(
+            "manual_external_completion_confirmed", state, previous, "completed",
+            "operator confirmed external manual English translation",
+            {"chinese_post_id": int(post_id),
+             "english_post_id": article["english_post_id"],
+             "method": "manual_external"},
+            timestamp, f"manual-external-completion|{post_id}|{timestamp}")
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return {**result, "changed": True, "writes_performed": True}
+
+
 def _read_json_object(path, label):
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -3609,8 +3703,6 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
     except (SafetyError, OSError, UnicodeError, json.JSONDecodeError) as error:
         reasons.append(f"production read-only check failed: {error}")
         return root, article, state, execution, prewrite, None, reasons
-    expected_cbp = int(old_manifest["expected_code_block_pro_count"])
-    expected_syntax = int(old_manifest["expected_syntaxhighlighter_count"])
     from src.analyzer import analyze_content
     analysis = analyze_content(live["chinese_content"], config)
     counts = analysis["blocks"]["counts"]
@@ -3633,8 +3725,7 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
         "english_publish": live["english_status"] == "publish",
         "polylang_english": live["linked_english_post_id"] == article["english_post_id"],
         "gutenberg": live["is_gutenberg"],
-        "syntaxhighlighter_zero": analysis["syntaxhighlighter_count"] == expected_syntax == 0,
-        "code_block_pro_count": counts.get("kevinbatdorf/code-block-pro", 0) == expected_cbp,
+        "syntaxhighlighter_zero": analysis["syntaxhighlighter_count"] == 0,
         "chinese_excerpt_known_for_restart": (
             current_excerpt_empty if recovery_kind == "rejected_excerpt_regeneration"
             else current_excerpt_empty or current_matches_old_generated),
@@ -3676,6 +3767,9 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
             sha256_text(old_generated_excerpt) if old_generated_nonempty else None),
         "current_excerpt_matches_old_generated": current_matches_old_generated,
         "restart_excerpt_state": excerpt_state,
+        "current_code_block_pro_count": counts.get(
+            "kevinbatdorf/code-block-pro", 0),
+        "current_syntaxhighlighter_count": analysis["syntaxhighlighter_count"],
         "recovery_kind": recovery_kind,
         "rejected_excerpt_evidence": rejected_evidence,
     }
@@ -3871,6 +3965,12 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
             "english_title_sha256": live["english_title_sha256"],
             "english_excerpt_sha256": live["english_excerpt_sha256"],
             "english_content_sha256": live["english_content_sha256"],
+            # This is a new execution baseline.  Current content, rather than
+            # the old migration validation, defines its Code Block Pro count.
+            "expected_code_block_pro_count": str(
+                current["current_code_block_pro_count"]),
+            "expected_syntaxhighlighter_count": str(
+                current["current_syntaxhighlighter_count"]),
             "execution_status": "pending",
         })
         _atomic_write_csv(current["manifest_path"], EXECUTION_MANIFEST_FIELDS, [manifest])
@@ -4436,6 +4536,20 @@ def render_operation_text(result):
     return "\n".join(lines)
 
 
+def render_manual_completion_text(result):
+    lines = [
+        f"模式: {result['mode']}",
+        f"文章: zh={result['chinese_post_id']} en={result['english_post_id']}",
+        f"当前状态: {result['previous_status']}",
+        "只读检查: post ID、publish、Polylang、英文标题和正文",
+        f"允许人工完成: {'是' if result['eligible'] else '否'}",
+        f"写入操作: {'是' if result['writes_performed'] else '否'}",
+    ]
+    if result["blocking_reasons"]:
+        lines.append("阻断原因: " + "; ".join(result["blocking_reasons"]))
+    return "\n".join(lines)
+
+
 def render_recover_text(result):
     source_labels = {
         "changed": "已修改", "unchanged": "未修改", "unknown": "未知",
@@ -4613,6 +4727,15 @@ def parse_args(argv=None):
     recover_parser.add_argument(
         "--repo-root", type=Path, default=repository_root(),
         help=argparse.SUPPRESS)
+    manual_completed = subparsers.add_parser(
+        "mark-manual-completed",
+        help="preview or confirm an externally completed manual translation")
+    manual_completed.add_argument("--post-id", required=True, type=int)
+    manual_completed.add_argument("--confirmed", action="store_true")
+    manual_completed.add_argument("--json", action="store_true", dest="json_output")
+    manual_completed.add_argument(
+        "--repo-root", type=Path, default=repository_root(),
+        help=argparse.SUPPRESS)
     sync = subparsers.add_parser(
         "sync-execution", help="preview or apply existing execution evidence")
     sync.add_argument("--apply", action="store_true")
@@ -4712,6 +4835,10 @@ def main(argv=None):
             result = recover(
                 args.repo_root, args.post_id, execute=args.execute)
             output = render_recover_text(result)
+        elif args.command == "mark-manual-completed":
+            result = mark_manual_completed(
+                args.repo_root, args.post_id, confirmed=args.confirmed)
+            output = render_manual_completion_text(result)
         elif args.command == "sync-execution":
             result = sync_execution(args.repo_root, apply=args.apply)
             output = render_operation_text(result)

@@ -3210,6 +3210,90 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertTrue(any("neither translation_failed" in reason
                             for reason in result["strategy_reasons"]))
 
+    def test_mark_manual_completed_confirms_translation_failure_without_changing_execution(self):
+        state_path, source, _ = self.prepare_source_restart()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "translation_failed"
+        MODULE._atomic_write_json(state_path, state)
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution_before = execution_path.read_bytes()
+        preview = MODULE.mark_manual_completed(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(preview["eligible"])
+        self.assertFalse(preview["writes_performed"])
+        self.assertEqual("translation_failed", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True, source_factory=lambda rows: source)
+        self.assertTrue(result["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["workflow_status"])
+        self.assertEqual("manual_external", state["manual_completion"]["method"])
+        self.assertEqual(execution_before, execution_path.read_bytes())
+        events = MODULE._read_events(MODULE._events_path(
+            self.root, "syntaxhighlighter-20260723-01"))
+        event = next(item for item in events if item["event_type"]
+                     == "manual_external_completion_confirmed")
+        self.assertEqual(1401, event["evidence"]["english_post_id"])
+        batch = next(item for item in MODULE.summary(self.root)["batches"]
+                     if item["batch_id"] == "syntaxhighlighter-20260723-01")
+        self.assertEqual(1, batch["completed"])
+        self.assertEqual(batch["total"] - 1, batch["remaining"])
+
+    def test_mark_manual_completed_allows_blocked(self):
+        state_path, source, _ = self.prepare_source_restart()
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True, source_factory=lambda rows: source)
+        self.assertTrue(result["changed"])
+        self.assertEqual("completed", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+    def test_mark_manual_completed_rejects_invalid_polylang(self):
+        state_path, source, _ = self.prepare_source_restart()
+        source.check = lambda chinese, english: {
+            "chinese_post_id": chinese, "chinese_language": "zh",
+            "linked_english_post_id": 9999, "english_post_id": english,
+            "english_language": "en", "linked_chinese_post_id": chinese,
+        }
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("Polylang relation mismatch", result["blocking_reasons"])
+        self.assertEqual("blocked", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+    def test_mark_manual_completed_rejects_unpublished_or_empty_english(self):
+        state_path, source, _ = self.prepare_source_restart()
+        original_get = source.get_post
+        def get_post(post_id):
+            post = original_get(post_id)
+            if int(post_id) == 1401:
+                post = dict(post)
+                post["status"] = "draft"
+                post["content"] = {"raw": ""}
+            return post
+        source.get_post = get_post
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("English post is not publish", result["blocking_reasons"])
+        self.assertIn("English content is empty", result["blocking_reasons"])
+        self.assertEqual("blocked", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+    def test_mark_manual_completed_does_not_repeat_completed_article(self):
+        state_path, _, _ = self.prepare_source_restart()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "completed"
+        MODULE._atomic_write_json(state_path, state)
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True,
+            source_factory=mock.Mock(side_effect=AssertionError("must not read")))
+        self.assertFalse(result["eligible"])
+        self.assertFalse(result["changed"])
+        self.assertIn("article is already completed", result["blocking_reasons"])
+
     def test_recover_rejects_missing_execution_generation(self):
         state_path, source, _ = self.prepare_source_restart()
         MODULE.restart_from_current(
@@ -3259,6 +3343,56 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("chinese_excerpt_known_for_restart",
                       result["blocking_reasons"])
         self.assertEqual(before, self.snapshot())
+
+    def test_restart_from_current_rebaselines_increased_code_block_pro_count(self):
+        from src.candidate_execution import sha256_text
+        _, source, content = self.prepare_source_restart()
+        increased, increased_content, _ = self.restart_source(
+            chinese_content=content + content)
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True,
+            source_factory=lambda rows: increased)
+        self.assertTrue(result["eligible"], result["blocking_reasons"])
+        manifest_path = MODULE._validation_paths(
+            self.root, "syntaxhighlighter-20260723-01", 401)[2]
+        with manifest_path.open(encoding="utf-8", newline="") as handle:
+            manifest = next(csv.DictReader(handle))
+        self.assertEqual("2", manifest["expected_code_block_pro_count"])
+        self.assertEqual(
+            sha256_text(increased_content),
+            manifest["chinese_content_sha256"])
+
+    def test_restart_from_current_rebaselines_reduced_code_block_pro_count(self):
+        _, source, _ = self.prepare_source_restart()
+        manifest_path = MODULE._validation_paths(
+            self.root, "syntaxhighlighter-20260723-01", 401)[2]
+        rows, _ = MODULE._read_csv(manifest_path)
+        rows[0]["expected_code_block_pro_count"] = "2"
+        MODULE._atomic_write_csv(
+            manifest_path, MODULE.EXECUTION_MANIFEST_FIELDS, rows)
+        result = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertTrue(result["eligible"], result["blocking_reasons"])
+        with manifest_path.open(encoding="utf-8", newline="") as handle:
+            manifest = next(csv.DictReader(handle))
+        self.assertEqual("1", manifest["expected_code_block_pro_count"])
+
+    def test_restart_from_current_rejects_reintroduced_syntaxhighlighter_or_invalid_format(self):
+        _, _, content = self.prepare_source_restart()
+        syntax_source, _, _ = self.restart_source(
+            chinese_content=content +
+            '<!-- wp:syntaxhighlighter/code --><pre>x</pre>'
+            '<!-- /wp:syntaxhighlighter/code -->')
+        invalid_source, _, _ = self.restart_source(
+            chinese_content="<pre><code>echo 1;</code></pre>")
+        for source, reason in (
+                (syntax_source, "syntaxhighlighter_zero"),
+                (invalid_source, "gutenberg")):
+            with self.subTest(reason=reason):
+                result = MODULE.restart_from_current(
+                    self.root, 401, source_factory=lambda rows, s=source: s)
+                self.assertFalse(result["eligible"])
+                self.assertIn(reason, result["blocking_reasons"])
 
     def test_restart_from_current_apply_archives_and_rebaselines_only_post(self):
         state_path, source, content = self.prepare_source_restart()
