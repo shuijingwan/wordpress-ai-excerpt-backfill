@@ -1,0 +1,78 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260813-01",
+  "batch_position": 18,
+  "blocked_reasons": [],
+  "chinese_post_id": 13533,
+  "english_post_id": 13594,
+  "execution_evidence": {
+    "sha256": "900db9c3269b5cde44259f801d91938337a39ba28b23bff253ca8ecf4680d82d",
+    "source_file": "data/backups/single-candidate/chinese-13533.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-13T01:07:40.065634+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-13T00:48:12.828404+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-13T01:07:40.065634+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "error_summary": "prompt_upstream_server_error: Internal Server Error (500) - 网络错误，错误id：20260813093746c30c6ddb6bc948ad，请稍后重试",
+    "occurred_at": "2026-08-13T01:47:19.456110+00:00",
+    "reason": "wordpress_api_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 484, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: prompt_upstream_server_error: Internal Server Error (500) - 网络错误，错误id：20260813093746c30c6ddb6bc948ad，请稍后重试\n",
+    "stdout_summary": "",
+    "wordpress_code": "prompt_upstream_server_error",
+    "wordpress_message": "Internal Server Error (500) - 网络错误，错误id：20260813093746c30c6ddb6bc948ad，请稍后重试"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-13T01:07:40.065634+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "retry_counts": {
+    "resume": 1,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260813-01.csv",
+  "source_batch_sha256": "b8aa14f8ae66dff274eadda32ff8cad2bbde282b31835e46c4385793ace5bbbe",
+  "source_row_sha256": "0949804b6210dfe640ef6cdffe09bb568eb6a3fe524852e6f8f5a40d1fa64dc6",
+  "updated_at": "2026-08-13T01:49:00.299419+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "917b15925136cadcde0acab07c27aee8dc75091173af7558b31b19af89f2bbd0",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "19aac92c84db4c5d3ec6122bda1a84374ff81b2f7c1a6486a30d260fda603ac2",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260813-01/chinese-13533.csv",
+    "status": "ready",
+    "validated_at": "2026-08-13T01:11:15.098349+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

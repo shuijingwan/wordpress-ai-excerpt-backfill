@@ -1921,15 +1921,26 @@ def _prewrite_path(root, post_id):
 
 
 def _source_restart_prepared(state, execution):
+    """Recognize only a SHA-bound prepared execution from this restart generation.
+
+    Older coordination records predate ``execution_evidence.recovery_generation``.
+    Its absence is compatible only when the execution file itself, the restart
+    record, and the SHA-bound evidence identify the current generation.  A
+    present coordination generation is never treated as optional.
+    """
     recovery = state.get("source_restart_recovery") or {}
     evidence = state.get("execution_evidence") or {}
     return bool(
         execution and execution["status"] == "prepared"
         and recovery.get("status") == "applied"
         and recovery.get("generation") == state.get("recovery_generation")
+        and execution.get("recovery_generation") == state.get("recovery_generation")
         and evidence.get("status") == "prepared"
         and evidence.get("sha256") == execution.get("sha256")
-        and evidence.get("recovery_generation") == state.get("recovery_generation")
+        and (
+            "recovery_generation" not in evidence
+            or evidence["recovery_generation"] == state.get("recovery_generation")
+        )
     )
 
 
@@ -1972,6 +1983,10 @@ def _execution_details(root, article):
             and isinstance(value.get("attempts"), int)
             else None
         ),
+        "recovery_generation": value.get("recovery_generation"),
+        "restart_excerpt_state": value.get("restart_excerpt_state"),
+        "expected_pre_run_excerpt_sha256": value.get(
+            "expected_pre_run_excerpt_sha256"),
     }
 
 
@@ -2018,6 +2033,9 @@ def _apply_execution_state(root, state, execution, reason):
         "sha256": execution["sha256"],
         "status": execution["status"],
     }
+    if execution.get("recovery_generation") is not None:
+        state["execution_evidence"]["recovery_generation"] = (
+            execution["recovery_generation"])
     state["updated_at"] = timestamp
     event = _transition_event(
         "execution_state_synchronized", state, previous, new_status, reason,
@@ -3486,7 +3504,8 @@ def _restart_manifest_row(root, state, article):
     return path, row
 
 
-def _restart_from_current_plan(root, post_id, source_factory=None):
+def _restart_from_current_plan(root, post_id, source_factory=None,
+                               allow_prepared_source_restart_retry=False):
     """Read production and prove an old failed execution can be discarded."""
     from src.candidate_execution import sha256_text
     from src.single_candidate_flow import build_live
@@ -3523,6 +3542,20 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
     if execution_status == "translation_failed":
         recovery_kind = "source_changed_after_translation_failure"
         allowed_workflow_statuses = {"blocked", "translation_failed"}
+    elif (allow_prepared_source_restart_retry
+          and execution_status == "prepared"
+          and _source_restart_prepared(state, {
+              "status": execution_status,
+              "sha256": _file_sha256(execution_path),
+              "recovery_generation": execution.get("recovery_generation"),
+          })):
+        recovery_kind = "prepared_source_restart_retry"
+        allowed_workflow_statuses = {"blocked"}
+        if any(key in execution for key in (
+                "generated_excerpt", "excerpt_attempts",
+                "translated_post_id", "completed_at")):
+            reasons.append(
+                "prepared restart evidence contains post-GLM or translation fields")
     elif execution_status == "excerpt_rejected":
         recovery_kind = "rejected_excerpt_regeneration"
         allowed_workflow_statuses = {"excerpt_failed"}
@@ -3647,6 +3680,84 @@ def _restart_from_current_plan(root, post_id, source_factory=None):
         "rejected_excerpt_evidence": rejected_evidence,
     }
     return root, article, state, execution, prewrite, current, reasons
+
+
+def _prepared_source_restart_retry_plan(root, post_id, source_factory=None):
+    """Prove a failed first run of a rebuilt generation is safe to rerun.
+
+    A prepared execution state is deliberately not resumable: the single
+    candidate flow writes it before asking GLM for an excerpt.  This narrow
+    plan therefore authorizes a fresh run only after rechecking the rebuilt
+    baseline and the transient failure evidence.
+    """
+    root, article, state, execution, prewrite, current, reasons = (
+        _restart_from_current_plan(
+            root, post_id, source_factory,
+            allow_prepared_source_restart_retry=True))
+    failure = state.get("last_failure") or {}
+    if (failure.get("stage") != "run"
+            or failure.get("reason") != "transient_network_error"):
+        reasons.append("last_failure is not a transient_network_error from run")
+    if not (current and current.get("recovery_kind")
+            == "prepared_source_restart_retry"):
+        reasons.append("execution is not a current prepared source-restart generation")
+    restart = state.get("source_restart_recovery", {})
+    if restart.get("recovery_kind") != (
+            "source_changed_after_translation_failure"):
+        reasons.append("source restart recovery kind is not translation failure")
+    if (execution.get("restart_excerpt_state") != restart.get("restart_excerpt_state")
+            or execution.get("expected_pre_run_excerpt_sha256")
+            != restart.get("expected_pre_run_excerpt_sha256")
+            or prewrite.get("recovery_generation")
+            != state.get("recovery_generation")):
+        reasons.append("prepared restart generation baseline evidence is incomplete")
+    if (current and execution.get("expected_pre_run_excerpt_sha256")
+            != current.get("current_excerpt_sha256")):
+        reasons.append("current Chinese excerpt differs from prepared restart baseline")
+    if current and current.get("restart_excerpt_state") != "empty":
+        reasons.append("rebuilt Chinese excerpt is not empty")
+    return root, article, state, execution, prewrite, current, reasons
+
+
+def _restore_prepared_source_restart_for_retry(root, post_id, source_factory=None):
+    """Move only a fully revalidated prepared restart back to ready-to-run."""
+    root, article, state, _, _, current, reasons = (
+        _prepared_source_restart_retry_plan(root, post_id, source_factory))
+    base = {
+        "eligible": not reasons, "blocking_reasons": reasons,
+        "changed": False, "writes_performed": False,
+    }
+    if reasons:
+        return base
+    with InitLock(root):
+        root, article, state, execution, _, current, reasons = (
+            _prepared_source_restart_retry_plan(root, post_id, source_factory))
+        if reasons:
+            return {**base, "eligible": False, "blocking_reasons": reasons}
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        execution_sha = _file_sha256(_execution_path(root, post_id))
+        state["workflow_status"] = "ready_for_execution"
+        state["recovery"] = {
+            "status": "applied", "action": "retry_prepared_source_restart",
+            "recovered_at": timestamp, "preserved_failure": state["last_failure"],
+            "recovery_generation": state["recovery_generation"],
+            "execution_sha256": execution_sha,
+        }
+        state["updated_at"] = timestamp
+        event = _transition_event(
+            "prepared_source_restart_transient_recovered", state, previous,
+            "ready_for_execution",
+            "prepared rebuilt generation failed before excerpt generation; rerun authorized",
+            {"recovery_generation": state["recovery_generation"],
+             "execution_sha256": execution_sha,
+             "last_failure": state["last_failure"],
+             "safety_checks": current["checks"]},
+            timestamp,
+            f"prepared-restart-retry|{post_id}|{execution_sha}")
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return {**base, "changed": True, "writes_performed": True}
 
 
 def restart_from_current(root, post_id, apply=False, source_factory=None,
@@ -3904,7 +4015,9 @@ def recover(root, post_id, execute=False, source_factory=None,
                 "next_step": _recover_next_step(final_status, post_id),
                 "writes_performed": True}
     root, article, state, execution, prewrite, current, reasons = (
-        _restart_from_current_plan(root, post_id, source_factory))
+        _restart_from_current_plan(
+            root, post_id, source_factory,
+            allow_prepared_source_restart_retry=True))
     unavailable = any("production_readonly_unavailable" in reason
                       for reason in reasons)
     source_changed = bool(
@@ -3925,6 +4038,14 @@ def recover(root, post_id, execute=False, source_factory=None,
         strategy = "rejected_excerpt_regeneration"
         strategy_reasons = [
             "已有中文摘要连续生成失败，生产中文源及英文源仍与 pre-write 基线一致"]
+    elif (current and current.get("recovery_kind")
+          == "prepared_source_restart_retry"):
+        _, _, _, _, _, _, retry_reasons = _prepared_source_restart_retry_plan(
+            root, post_id, source_factory)
+        if not retry_reasons:
+            strategy, strategy_reasons = "retry_prepared_source_restart", [
+                "已重建的当前 generation 在生成摘要前发生瞬时网络错误；"
+                "中文源、空摘要和英文基线仍全部匹配"]
     elif execution_status in {
             "chinese_excerpt_saved", "translation_started",
             "translation_failed"} and not source_changed:
@@ -3974,6 +4095,15 @@ def recover(root, post_id, execute=False, source_factory=None,
             return {**result, "strategy": "blocked",
                     "strategy_reasons": restarted["blocking_reasons"]}
         result["baseline_rebuild"] = "completed"
+        operation = _run_ready_once(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner)
+    elif strategy == "retry_prepared_source_restart":
+        restored = _restore_prepared_source_restart_for_retry(
+            root, post_id, source_factory)
+        if not restored["eligible"] or not restored["changed"]:
+            return {**result, "strategy": "blocked",
+                    "strategy_reasons": restored["blocking_reasons"]}
         operation = _run_ready_once(
             root, execute=True, batch_id=state["batch_id"], post_id=post_id,
             runner=runner)
@@ -4314,6 +4444,7 @@ def render_recover_text(result):
     strategy_labels = {
         "restart_from_current": "restart_from_current",
         "rejected_excerpt_regeneration": "rejected_excerpt_regeneration",
+        "retry_prepared_source_restart": "retry_prepared_source_restart",
         "resume": "resume", "retry_from_ready": "retry_from_ready",
         "blocked": "blocked", "none": "none"}
     lines = [

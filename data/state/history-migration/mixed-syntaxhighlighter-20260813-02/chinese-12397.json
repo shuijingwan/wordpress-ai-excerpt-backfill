@@ -1,0 +1,125 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260813-02",
+  "batch_position": 3,
+  "blocked_reasons": [],
+  "chinese_post_id": 12397,
+  "english_post_id": 12405,
+  "execution_evidence": {
+    "recovery_generation": 1,
+    "sha256": "2d56c8cdbd946de9c1df4f2fc08a90a34d0de1ee0048b78b6caaf9f5b5ec98e5",
+    "source_file": "data/backups/single-candidate/chinese-12397.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-13T03:25:57.258278+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-13T03:04:57.504294+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-13T03:25:57.258278+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "error_summary": "",
+    "occurred_at": "2026-08-13T06:26:58.182613+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 45, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 297, in _read_status\n    line = str(self.fp.readline(_MAXLINE + 1), \"iso-8859-1\")\n               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/socket.py\", line 725, in readinto\n    return self._sock.recv_into(b)\n           ~~~~~~~~~~~~~~~~~~~~^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1304, in recv_into\n    return self.read(nbytes, buffer)\n           ~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1138, in read\n    return self._sslobj.read(len, buffer)\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^\nTimeoutError: The read operation timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 449, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 56, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 50, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: TimeoutError\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "resume": 2,
+    "run": 1
+  },
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-13T03:25:57.258278+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery": {
+    "action": "retry_prepared_source_restart",
+    "execution_sha256": "60e57f5e7e82bc77a53e341b8a2422cb5bc6bf24a0978d67373a18eaaeb371c7",
+    "preserved_failure": {
+      "attempt": 2,
+      "error_summary": "",
+      "occurred_at": "2026-08-13T06:26:58.182613+00:00",
+      "reason": "transient_network_error",
+      "returncode": 1,
+      "stage": "run",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 45, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 297, in _read_status\n    line = str(self.fp.readline(_MAXLINE + 1), \"iso-8859-1\")\n               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/socket.py\", line 725, in readinto\n    return self._sock.recv_into(b)\n           ~~~~~~~~~~~~~~~~~~~~^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1304, in recv_into\n    return self.read(nbytes, buffer)\n           ~~~~~~~~~^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/ssl.py\", line 1138, in read\n    return self._sslobj.read(len, buffer)\n           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^\nTimeoutError: The read operation timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 449, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 56, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 50, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: TimeoutError\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "recovered_at": "2026-08-13T08:47:58.454302+00:00",
+    "recovery_generation": 1,
+    "status": "applied"
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 0,
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260813-02.csv",
+  "source_batch_sha256": "b58427a2322eef8d1b858cefe93dc28d0ae992570ebff5c3880f09151164346b",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-12397/20260813T062512.242211Z",
+    "expected_pre_run_excerpt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 2,
+      "error_summary": "",
+      "occurred_at": "2026-08-13T03:50:25.134322+00:00",
+      "reason": "transient_network_error",
+      "returncode": 1,
+      "stage": "resume",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 484, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400: prompt_client_error: Bad Request (400) - 系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "reason": "Chinese source edited after failed execution",
+    "recovered_at": "2026-08-13T06:25:12.242211+00:00",
+    "recovery_kind": "source_changed_after_translation_failure",
+    "restart_excerpt_state": "empty",
+    "status": "applied"
+  },
+  "source_row_sha256": "6934ef3e2620be6802b8a00b2956734db16642fd6ff8a6890e80f343d679c966",
+  "updated_at": "2026-08-13T08:49:26.602769+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "82af18496ff5b575c6350856c15393b65f09762798a7551a3a10c2772692bfb1",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "e6bdd2d73002ddbc3661e08ce383c609784db63574f99354088a4800574b01e1",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260813-02/chinese-12397.csv",
+    "status": "ready",
+    "validated_at": "2026-08-13T03:26:19.723709+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

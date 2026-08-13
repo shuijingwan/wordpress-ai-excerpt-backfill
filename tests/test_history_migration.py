@@ -3100,6 +3100,139 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("completed", state["workflow_status"])
 
+    def test_recover_reruns_prepared_current_restart_after_glm_timeout(self):
+        """A rebuilt baseline may safely rerun when GLM failed before any write."""
+        state_path, source, _ = self.prepare_source_restart()
+        rebuilt = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertTrue(rebuilt["changed"])
+
+        def timeout_runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_path = MODULE._execution_path(self.root, 401)
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            execution["started_at"] = "2026-08-13T00:00:01+00:00"
+            MODULE._atomic_write_json(execution_path, execution)
+            return mock.Mock(returncode=1, stdout="", stderr=(
+                "HttpJsonError: network request failed: TimeoutError"))
+
+        first = MODULE._run_ready_once(
+            self.root, execute=True, batch_id="syntaxhighlighter-20260723-01",
+            post_id=401, runner=timeout_runner)
+        self.assertEqual("prepared", first["results"][0]["result"])
+        self.assertEqual("transient_network_error", first["results"][0]["category"])
+        blocked = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", blocked["workflow_status"])
+        self.assertEqual("transient_network_error", blocked["last_failure"]["reason"])
+        self.assertEqual("prepared", blocked["execution_evidence"]["status"])
+        self.assertEqual(1, blocked["execution_evidence"]["recovery_generation"])
+        self.assertEqual("applied", blocked["source_restart_recovery"]["status"])
+
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_prepared_source_restart", preview["strategy"])
+
+        calls = []
+        def complete_runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        recovered = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=complete_runner)
+        self.assertEqual("completed", recovered["final_status"])
+        self.assertEqual("completed", recovered["reexecution"])
+        self.assertTrue(all("--resume" not in command for command in calls))
+        self.assertTrue(all("--recovery-restart" in command for command in calls))
+
+    def test_recover_accepts_legacy_prepared_restart_without_coordination_generation(self):
+        """Pre-fix coordination evidence lacks generation but remains SHA-bound."""
+        state_path, source, _ = self.prepare_source_restart()
+        MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+
+        def timeout_runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            execution_path = MODULE._execution_path(self.root, 401)
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            execution["started_at"] = "2026-08-13T00:00:01+00:00"
+            MODULE._atomic_write_json(execution_path, execution)
+            return mock.Mock(returncode=1, stdout="", stderr=(
+                "HttpJsonError: network request failed: TimeoutError"))
+
+        MODULE._run_ready_once(
+            self.root, execute=True, batch_id="syntaxhighlighter-20260723-01",
+            post_id=401, runner=timeout_runner)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        del state["execution_evidence"]["recovery_generation"]
+        MODULE._atomic_write_json(state_path, state)
+
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_prepared_source_restart", preview["strategy"])
+
+        calls = []
+        def complete_runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        recovered = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=complete_runner)
+        self.assertEqual("completed", recovered["final_status"])
+        self.assertTrue(all("--resume" not in command for command in calls))
+        self.assertTrue(all("--recovery-restart" in command for command in calls))
+
+    def test_recover_keeps_unproven_blocked_prepared_state_blocked(self):
+        state_path, source, _ = self.prepare_source_restart()
+        MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "last_failure": {"stage": "run", "reason": "transient_network_error"},
+            "execution_evidence": {
+                **state["execution_evidence"], "recovery_generation": 999,
+            },
+        })
+        MODULE._atomic_write_json(state_path, state)
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertTrue(any("neither translation_failed" in reason
+                            for reason in result["strategy_reasons"]))
+
+    def test_recover_rejects_missing_execution_generation(self):
+        state_path, source, _ = self.prepare_source_restart()
+        MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        del execution["recovery_generation"]
+        MODULE._atomic_write_json(execution_path, execution)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "last_failure": {
+                "stage": "run", "reason": "transient_network_error"},
+        })
+        state["execution_evidence"]["sha256"] = MODULE._file_sha256(
+            execution_path)
+        MODULE._atomic_write_json(state_path, state)
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertTrue(any("neither translation_failed" in reason
+                            for reason in result["strategy_reasons"]))
+
     def test_restart_from_current_accepts_exact_old_generated_excerpt(self):
         _, source, _ = self.prepare_source_restart(excerpt="旧摘要")
         before = self.snapshot()
