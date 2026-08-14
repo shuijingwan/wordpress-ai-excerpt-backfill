@@ -529,6 +529,22 @@ class SingleCandidateFlowTest(unittest.TestCase):
                 self.assertNotIn(secret, state_path.read_text(encoding="utf-8"))
             self.assertEqual([], wp.update_calls); self.assertEqual(0, translator.calls)
 
+    def test_glm_http_failure_is_persisted_before_any_wordpress_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wp = MockWp()
+            glm = SequenceGlm([HttpJsonError(
+                "HTTP request failed with status 400", response={
+                    "code": "invalid_request", "message": "bad payload"})])
+            flow, _, _, _, _ = self.make_flow(
+                directory, wp, glm, MockTranslator(wp))
+            with self.assertRaisesRegex(HttpJsonError, "status 400"):
+                flow.execute(1)
+            state = json.loads((Path(directory) / "chinese-1.execution.json").read_text())
+            self.assertEqual("excerpt_generation_failed", state["status"])
+            self.assertEqual(1, state["excerpt_generation_attempts"])
+            self.assertEqual("invalid_request", state["error_response"]["code"])
+            self.assertEqual([], wp.update_calls)
+
     def test_resume_rejects_excerpt_rejected_and_regular_retry_calls_glm_again(self):
         with tempfile.TemporaryDirectory() as directory:
             wp = MockWp(); rejected = RejectedGlm(); translator = MockTranslator(wp)

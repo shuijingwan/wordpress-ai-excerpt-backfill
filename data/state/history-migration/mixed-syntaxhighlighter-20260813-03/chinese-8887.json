@@ -1,0 +1,85 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260813-03",
+  "batch_position": 8,
+  "blocked_reasons": [],
+  "chinese_post_id": 8887,
+  "english_post_id": 11770,
+  "execution_evidence": {
+    "sha256": "83ba79e0667a755df26bda6b1666aaa7c76fed989b512fcb08811c90718b6706",
+    "source_file": "data/backups/single-candidate/chinese-8887.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-13T12:38:39.696505+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-13T12:07:31.169301+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-13T12:38:39.696505+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "error_summary": "",
+    "occurred_at": "2026-08-13T12:53:52.976748+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 449, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-13T12:38:39.696505+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery": {
+    "action": "restart",
+    "execution_sha256": "a5edbb696bcc357a37c8f373ee6f8079f4b71c03304c418c2d3cc00716944348",
+    "execution_status": "prepared",
+    "recovered_at": "2026-08-13T12:53:58.313204+00:00",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260813-03.csv",
+  "source_batch_sha256": "8ce494d78abde93baf11a7ec51c032997d7ee447d6b4cda66bbe672d79e2d191",
+  "source_row_sha256": "b4f414d5bc88b445a087093bda4e3637250964798b82b60b2ef15e20db52205c",
+  "updated_at": "2026-08-13T12:55:43.050692+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "b8549717cc8dcade6398a179de9d954d64c332845f9cbe19e6bc7739b6370f6a",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "d86df56a6cfa18563e94558a4e0e856c945062a1136dbc870c243c6a34f939b7",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260813-03/chinese-8887.csv",
+    "status": "ready",
+    "validated_at": "2026-08-13T12:39:25.069301+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

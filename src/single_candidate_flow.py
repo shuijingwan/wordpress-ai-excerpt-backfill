@@ -423,7 +423,8 @@ class SingleCandidateFlow:
             backup_path = self.backup_dir / f"chinese-{zh_id}.pre-write.json"
             if prior is not None:
                 if (prior.get("status") not in {
-                            "prepared", "excerpt_rejected", "excerpt_generated"}
+                            "prepared", "excerpt_rejected", "excerpt_generation_failed",
+                            "excerpt_generated"}
                         or prior.get("chinese_post_id") != zh_id
                         or prior.get("english_post_id") != en_id
                         or not backup_path.is_file()):
@@ -465,6 +466,24 @@ class SingleCandidateFlow:
                         error.rejected_excerpt_paths = list(rejected_paths)
                         raise
                     continue
+                except Exception as error:
+                    # No WordPress mutation has occurred before a generated
+                    # excerpt is persisted.  Record this separately from a
+                    # rejected model response so the coordinator can prove
+                    # that retrying excerpt generation is safe.
+                    diagnostics = {
+                        "error": str(error),
+                        "excerpt_generation_attempts": attempt,
+                    }
+                    response = getattr(error, "response", None)
+                    if isinstance(response, dict):
+                        diagnostics["error_response"] = response
+                    response_excerpt = getattr(error, "response_excerpt", None)
+                    if isinstance(response_excerpt, str) and response_excerpt:
+                        diagnostics["error_response_excerpt"] = response_excerpt[:500]
+                    self._save_state(
+                        state, "excerpt_generation_failed", **diagnostics)
+                    raise
                 break
             self._save_state(state, "excerpt_generated", generated_excerpt=excerpt,
                              excerpt_attempts=attempt)

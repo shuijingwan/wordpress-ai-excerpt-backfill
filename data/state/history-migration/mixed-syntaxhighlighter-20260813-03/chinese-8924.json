@@ -1,0 +1,78 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260813-03",
+  "batch_position": 5,
+  "blocked_reasons": [],
+  "chinese_post_id": 8924,
+  "english_post_id": 11750,
+  "execution_evidence": {
+    "sha256": "ad2936185ba9881cf2df9ca70aa00d46a5a1d0669d59cb2aecd5612253203eda",
+    "source_file": "data/backups/single-candidate/chinese-8924.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-13T12:38:38.212342+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-13T12:07:31.169301+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-13T12:38:38.212342+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "error_summary": "swq_field_translation_failed: Field translation failed: field=title, unit_id=title, reason=prompt_network_error. Diagnostic: /tmp/swq-glm52-field-error-summary.json",
+    "occurred_at": "2026-08-13T12:51:30.449499+00:00",
+    "reason": "wordpress_api_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 484, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 503: swq_field_translation_failed: Field translation failed: field=title, unit_id=title, reason=prompt_network_error. Diagnostic: /tmp/swq-glm52-field-error-summary.json\n",
+    "stdout_summary": "",
+    "wordpress_code": "swq_field_translation_failed",
+    "wordpress_message": "Field translation failed: field=title, unit_id=title, reason=prompt_network_error. Diagnostic: /tmp/swq-glm52-field-error-summary.json"
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-13T12:38:38.212342+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "retry_counts": {
+    "resume": 1,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260813-03.csv",
+  "source_batch_sha256": "8ce494d78abde93baf11a7ec51c032997d7ee447d6b4cda66bbe672d79e2d191",
+  "source_row_sha256": "91945bf592841f2bdba72be05603aa1c5df1133b92881c5bf2bb4b7fe8fb4a99",
+  "updated_at": "2026-08-13T12:52:07.943849+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "f19728c33ae0cfcedfce3668cd0e2c11e83efb2e7c44a584671a8e7094afd32a",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "eade003d9d486b44d48c89003ee395de44ee87ee3054453936a3508645fe3f92",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260813-03/chinese-8924.csv",
+    "status": "ready",
+    "validated_at": "2026-08-13T12:39:14.615001+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

@@ -2493,6 +2493,13 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             "preflight")
         self.assertEqual("authentication_error", auth["category"])
 
+    def test_http_400_is_a_client_error_not_a_transient_network_error(self):
+        failure = MODULE._classify_subprocess_failure(
+            mock.Mock(returncode=1, stderr=
+                      "HttpJsonError: HTTP request failed with status 400",
+                      stdout=""), "execute")
+        self.assertEqual("http_client_error", failure["category"])
+
     def test_excerpt_validation_forbidden_text_is_not_authentication_error(self):
         failure = MODULE._classify_subprocess_failure(
             mock.Mock(
@@ -3148,6 +3155,152 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual("completed", recovered["reexecution"])
         self.assertTrue(all("--resume" not in command for command in calls))
         self.assertTrue(all("--recovery-restart" in command for command in calls))
+
+    def test_recover_retries_persisted_excerpt_generation_failure(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        execution_path = MODULE._execution_path(self.root, 401)
+        MODULE._atomic_write_json(execution_path, {
+            "schema_version": 1, "chinese_post_id": 401,
+            "english_post_id": 1401, "status": "excerpt_generation_failed",
+            "backup_path": str(prewrite_path), "started_at": "2026-08-14T00:00:00+00:00",
+            "error": "HTTP request failed with status 400",
+            "excerpt_generation_attempts": 1,
+            "error_response": {"code": "invalid_request"},
+        })
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "excerpt_failed",
+            "execution_evidence": {
+                "status": "excerpt_generation_failed",
+                "sha256": MODULE._file_sha256(execution_path),
+            },
+            "last_failure": {"stage": "run", "reason": "http_client_error"},
+        })
+        MODULE._atomic_write_json(state_path, state)
+        preview = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", preview["strategy"])
+        self.assertEqual("glm_api_error", preview["actual_error"])
+
+        def runner(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        recovered = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=runner)
+        self.assertEqual("completed", recovered["final_status"])
+
+    def test_recover_accepts_sha_bound_legacy_prepared_glm_http_400_failure(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        execution_path = self.write_execution(401, 1401, "prepared")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "execution_evidence": {
+                "status": "prepared", "sha256": MODULE._file_sha256(execution_path),
+            },
+            "last_failure": {
+                "stage": "run", "reason": "preflight_failed",
+            },
+            "recovery": {
+                "status": "applied", "stage": "run",
+                "action": "retry_excerpt_generation",
+                "execution_sha256": MODULE._file_sha256(execution_path),
+                "preserved_failure": {
+                    "stage": "run", "reason": "transient_network_error",
+                    "stderr_summary": "HttpJsonError: HTTP request failed with status 400",
+                },
+            },
+        })
+        MODULE._atomic_write_json(state_path, state)
+        preview = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", preview["strategy"])
+        self.assertEqual("http_client_error", preview["actual_error"])
+
+    def test_legacy_excerpt_recovery_preflight_failure_preserves_retry_basis(self):
+        state_path, source, content = self.prepare_source_restart()
+        from src.candidate_execution import sha256_text
+        prewrite_path = MODULE._prewrite_path(self.root, 401)
+        prewrite = json.loads(prewrite_path.read_text(encoding="utf-8"))
+        prewrite["sha256"].update({
+            "chinese_title": sha256_text("人工修复标题"),
+            "chinese_content": sha256_text(content),
+        })
+        MODULE._atomic_write_json(prewrite_path, prewrite)
+        execution_path = self.write_execution(401, 1401, "prepared")
+        execution_before = execution_path.read_bytes()
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "retry_counts": {"run": MODULE.MAX_RUN_ATTEMPTS, "resume": 0},
+            "execution_evidence": {
+                "status": "prepared", "sha256": MODULE._file_sha256(execution_path),
+            },
+            "last_failure": {
+                "stage": "run", "reason": "transient_network_error",
+                "stderr_summary": "HttpJsonError: HTTP request failed with status 400",
+            },
+        })
+        MODULE._atomic_write_json(state_path, state)
+        calls = []
+
+        def readonly_failure(command, **kwargs):
+            calls.append(command)
+            self.assertIn("--preflight-live", command)
+            return mock.Mock(returncode=1, stdout="", stderr=
+                "ReadError: read-only source temporarily unavailable")
+
+        failed = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=readonly_failure)
+        self.assertEqual("failed", failed["reexecution"])
+        self.assertEqual("preflight_failed", failed["operation_result"]["category"])
+        self.assertEqual(1, len(calls))
+        self.assertEqual(execution_before, execution_path.read_bytes())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        self.assertEqual("transient_network_error", state["last_failure"]["reason"])
+        self.assertEqual("preflight_failed", state["recovery"]["last_preflight_failure"]["category"])
+        self.assertEqual(1, state["recovery"]["preflight_attempts"])
+        retry = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", retry["strategy"])
+
+        def glm_failure(command, **kwargs):
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            MODULE._atomic_write_json(execution_path, {
+                "schema_version": 1, "chinese_post_id": 401,
+                "english_post_id": 1401, "status": "excerpt_generation_failed",
+                "error": "HTTP request failed with status 400",
+                "excerpt_generation_attempts": 1,
+            })
+            return mock.Mock(returncode=1, stdout="", stderr=
+                "HttpJsonError: HTTP request failed with status 400")
+
+        retried = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=glm_failure)
+        self.assertEqual("excerpt_failed", retried["final_status"])
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        self.assertEqual("excerpt_generation_failed", execution["status"])
 
     def test_recover_accepts_legacy_prepared_restart_without_coordination_generation(self):
         """Pre-fix coordination evidence lacks generation but remains SHA-bound."""

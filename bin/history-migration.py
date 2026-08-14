@@ -126,7 +126,7 @@ EXECUTION_CANDIDATE_FIELDS = {
 }
 KNOWN_EXECUTION_STATUSES = {
     "prepared", "excerpt_rejected", "rejected_excerpt_generation",
-    "excerpt_generated", "chinese_excerpt_saved",
+    "excerpt_generation_failed", "excerpt_generated", "chinese_excerpt_saved",
     "translation_started", "translation_failed", "completed", "failed", "pending",
 }
 DERIVED_SUFFIXES = ("-validation.csv", "-execution-candidates.csv")
@@ -654,6 +654,7 @@ def _workflow_mapping(batch, execution, validation):
             "translation_failed": "translation_failed",
             "excerpt_rejected": "excerpt_failed",
             "rejected_excerpt_generation": "excerpt_failed",
+            "excerpt_generation_failed": "excerpt_failed",
             "prepared": "blocked",
             "excerpt_generated": "blocked",
             "failed": "blocked",
@@ -1900,6 +1901,7 @@ EXECUTION_STATUS_MAP = {
     "completed": "completed",
     "excerpt_rejected": "excerpt_failed",
     "rejected_excerpt_generation": "excerpt_failed",
+    "excerpt_generation_failed": "excerpt_failed",
     "chinese_excerpt_saved": "ready_for_translation_resume",
     "translation_started": "ready_for_translation_resume",
     "translation_failed": "translation_failed",
@@ -1941,6 +1943,45 @@ def _source_restart_prepared(state, execution):
             "recovery_generation" not in evidence
             or evidence["recovery_generation"] == state.get("recovery_generation")
         )
+    )
+
+
+def _legacy_prepared_excerpt_http_failure(state, execution_sha):
+    """Recognize only the pre-fix prepared evidence caused by GLM HTTP 400.
+
+    Earlier executors did not persist a terminal excerpt-generation status.
+    The coordination failure event is sufficient only when it is SHA-bound to
+    the still-prepared execution file and explicitly records the HTTP 400.
+    """
+    evidence = state.get("execution_evidence") or {}
+    recovery = state.get("recovery") or {}
+    # A pre-fix recovery attempt could overwrite ``last_failure`` after the
+    # original evidence had already been preserved in ``recovery``.  Trust it
+    # only when that recovery remains bound to this exact prepared file.
+    preserved = recovery.get("preserved_failure")
+    failure = (
+        preserved if (_excerpt_generation_recovery_active(state, execution_sha)
+                      and isinstance(preserved, dict))
+        else state.get("last_failure") or {})
+    text = "\n".join(str(failure.get(key, "")) for key in (
+        "stderr_summary", "stdout_summary", "error_summary"))
+    return bool(
+        state.get("workflow_status") == "blocked"
+        and failure.get("stage") == "run"
+        and failure.get("reason") == "transient_network_error"
+        and re.search(r"\b(?:http(?: request)? (?:failed )?with status|http error) 400\b",
+                      text, re.IGNORECASE)
+        and evidence.get("status") == "prepared"
+        and evidence.get("sha256") == execution_sha
+    )
+
+
+def _excerpt_generation_recovery_active(state, execution_sha):
+    recovery = state.get("recovery") or {}
+    return bool(
+        recovery.get("status") == "applied"
+        and recovery.get("action") == "retry_excerpt_generation"
+        and recovery.get("execution_sha256") == execution_sha
     )
 
 
@@ -2006,7 +2047,9 @@ def _structured_execution_failure(execution):
     response = (execution or {}).get("error_response") or {}
     code = response.get("code")
     message = response.get("message")
-    if code == "swq_full_article_token_validation_failed":
+    if status == "excerpt_generation_failed" and code:
+        category = "glm_api_error"
+    elif code == "swq_full_article_token_validation_failed":
         category = "protected_token_validation_error"
     elif code:
         category = "wordpress_api_error"
@@ -2173,10 +2216,16 @@ def _classify_subprocess_failure(completed, phase):
     )
     if any(marker in combined for marker in readonly_markers):
         category = "production_readonly_unavailable"
-    elif any(marker in combined for marker in transient_markers):
-        category = "transient_network_error"
     elif any(marker in combined for marker in authentication_markers):
         category = "authentication_error"
+    elif re.search(r"\b(?:http(?: request)? (?:failed )?with status|http error) 4(?:0[0-9]|1[0-9])\b", combined):
+        # A non-authentication HTTP 4xx is a deterministic client/API request
+        # failure, not a transport interruption.  408 and 429 are handled as
+        # retryable below when explicitly reported by the service.
+        category = "transient_network_error" if re.search(
+            r"\b(?:408|429)\b", combined) else "http_client_error"
+    elif any(marker in combined for marker in transient_markers):
+        category = "transient_network_error"
     elif phase == "preflight":
         category = "preflight_failed"
     else:
@@ -2362,6 +2411,36 @@ def _restore_ready_after_transient(root, state, attempt, failure):
         state, event)
 
 
+def _record_recovery_preflight_failure(root, state, failure):
+    """Keep a recovery preflight failure separate from its proven root cause."""
+    timestamp = datetime.now(timezone.utc).isoformat()
+    previous = state["workflow_status"]
+    recovery = dict(state.get("recovery") or {})
+    attempts = int(recovery.get("preflight_attempts", 0)) + 1
+    evidence = {
+        "attempt": attempts, "occurred_at": timestamp,
+        "category": failure["category"],
+        "returncode": failure.get("returncode"),
+        "stderr_summary": failure.get("stderr_summary", ""),
+        "stdout_summary": failure.get("stdout_summary", ""),
+    }
+    recovery["preflight_attempts"] = attempts
+    recovery["last_preflight_failure"] = evidence
+    # ``preserved_failure`` remains the SHA-bound GLM failure that made this
+    # narrowly-authorized recovery safe.  Do not replace it with a read error.
+    state["workflow_status"] = "blocked"
+    state["recovery"] = recovery
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "recovery_preflight_attempt_failed", state, previous, "blocked",
+        "recovery preflight failed before a candidate execution was started",
+        {"recovery": recovery, "preflight_failure": evidence}, timestamp,
+        f"recovery-preflight|{attempts}|{timestamp}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+
+
 def _record_interrupted_execution(root, state, attempt, artifacts):
     """Preserve an ambiguous interruption without claiming it is safe to retry."""
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -2437,10 +2516,12 @@ def _run_items(root, batch_id=None, post_id=None):
             )
             recovered_restart = bool(
                 execution
-                and execution["status"] in {"prepared", "excerpt_generated"}
+                and execution["status"] in {
+                    "prepared", "excerpt_generation_failed", "excerpt_generated"}
                 and recovery.get("status") == "applied"
                 and recovery.get("stage") == "run"
-                and recovery.get("action") in {"restart", "observe"}
+                and recovery.get("action") in {
+                    "restart", "observe", "retry_excerpt_generation"}
                 and recovery.get("execution_sha256") == execution_sha256
             )
             if execution and not recovered_restart and not _source_restart_prepared(
@@ -2467,7 +2548,8 @@ def _run_items(root, batch_id=None, post_id=None):
 
 
 def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
-                    runner=subprocess.run, max_run_attempts=MAX_RUN_ATTEMPTS):
+                    runner=subprocess.run, max_run_attempts=MAX_RUN_ATTEMPTS,
+                    recovery_retry=False):
     root, items = _run_items(root, batch_id, post_id)
     if post_id is not None:
         items = [item for item in items if item["post_id"] == int(post_id)]
@@ -2496,8 +2578,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                 _validation_still_valid(root, state)
                 special_validated_mixed = _special_validated_mixed_execution_allowed(
                     batches_by_id[item["batch_id"]], state)
-                if int((state.get("retry_counts") or {}).get(
-                        "run", 0)) >= max_run_attempts:
+                if (not recovery_retry and int((state.get("retry_counts") or {}).get(
+                        "run", 0)) >= max_run_attempts):
                     _block_retry_exhausted(root, state, "run")
                     raise ReadError("run retry limit exhausted")
                 try:
@@ -2509,6 +2591,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                         timeout=180)
                 except (OSError, subprocess.SubprocessError) as error:
                     failure = _exception_failure(error, "preflight")
+                    if recovery_retry:
+                        _record_recovery_preflight_failure(root, state, failure)
                     finish(_operation_result(
                         item, ("production_readonly_unavailable"
                                if failure["category"] ==
@@ -2521,6 +2605,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                 if preflight.returncode != 0:
                     failure = _classify_subprocess_failure(
                         preflight, "preflight")
+                    if recovery_retry:
+                        _record_recovery_preflight_failure(root, state, failure)
                     finish(_operation_result(
                         item, ("production_readonly_unavailable"
                                if failure["category"] ==
@@ -2657,7 +2743,11 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                 if attempt is None:
                     attempt = int((state.get("retry_counts") or {}).get("run", 0))
                 failure = _exception_failure(error, "execute")
-                if state and state["workflow_status"] == "execution_in_progress":
+                if (recovery_retry and state
+                        and state["workflow_status"] == "ready_for_execution"):
+                    failure["category"] = "recovery_preflight_failed"
+                    _record_recovery_preflight_failure(root, state, failure)
+                elif state and state["workflow_status"] == "execution_in_progress":
                     failure["artifacts"] = _execution_artifacts(
                         root, item["post_id"])
                     _block_after_operation_error(
@@ -2909,6 +2999,10 @@ def _prepare_article_retry(root, post_id, source_factory=None):
         mode = "run"
         target = "ready_for_execution"
         action = "restart"
+    elif execution["status"] == "excerpt_generation_failed":
+        mode = "run"
+        target = "ready_for_execution"
+        action = "retry_excerpt_generation"
     elif execution["status"] == "excerpt_generated":
         if _live_chinese_excerpt_empty(article, source_factory):
             mode = "run"
@@ -3636,6 +3730,16 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
     if execution_status == "translation_failed":
         recovery_kind = "source_changed_after_translation_failure"
         allowed_workflow_statuses = {"blocked", "translation_failed"}
+    elif execution_status == "excerpt_generation_failed":
+        recovery_kind = "excerpt_generation_retry"
+        allowed_workflow_statuses = {"excerpt_failed"}
+        if _excerpt_generation_recovery_active(
+                state, _file_sha256(execution_path)):
+            allowed_workflow_statuses.add("blocked")
+    elif (execution_status == "prepared" and _legacy_prepared_excerpt_http_failure(
+            state, _file_sha256(execution_path))):
+        recovery_kind = "legacy_prepared_excerpt_generation_retry"
+        allowed_workflow_statuses = {"blocked"}
     elif (allow_prepared_source_restart_retry
           and execution_status == "prepared"
           and _source_restart_prepared(state, {
@@ -3657,7 +3761,8 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
         recovery_kind = None
         allowed_workflow_statuses = set()
         reasons.append(
-            "execution status is neither translation_failed nor excerpt_rejected")
+            "execution status is neither translation_failed nor excerpt_rejected "
+            "nor excerpt_generation_failed")
     if (state["workflow_status"] != "completed"
             and state["workflow_status"] not in allowed_workflow_statuses):
         reasons.append(
@@ -3849,6 +3954,58 @@ def _restore_prepared_source_restart_for_retry(root, post_id, source_factory=Non
              "safety_checks": current["checks"]},
             timestamp,
             f"prepared-restart-retry|{post_id}|{execution_sha}")
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return {**base, "changed": True, "writes_performed": True}
+
+
+def _restore_excerpt_generation_for_retry(root, post_id, source_factory=None):
+    """Reauthorize a no-write GLM request failure after fresh read-only checks."""
+    allowed_kinds = {
+        "excerpt_generation_retry",
+        "legacy_prepared_excerpt_generation_retry",
+    }
+    root, _, state, execution, _, current, reasons = (
+        _restart_from_current_plan(root, post_id, source_factory))
+    if not current or current.get("recovery_kind") not in allowed_kinds:
+        reasons.append("execution is not a recoverable excerpt generation failure")
+    base = {
+        "eligible": not reasons, "blocking_reasons": reasons,
+        "changed": False, "writes_performed": False,
+    }
+    if reasons:
+        return base
+    with InitLock(root):
+        root, _, state, execution, _, current, reasons = (
+            _restart_from_current_plan(root, post_id, source_factory))
+        if not current or current.get("recovery_kind") not in allowed_kinds:
+            reasons.append("execution is not a recoverable excerpt generation failure")
+        if reasons:
+            return {**base, "eligible": False, "blocking_reasons": reasons}
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        execution_sha = _file_sha256(_execution_path(root, post_id))
+        preserved_failure = dict(state.get("last_failure") or {})
+        state["workflow_status"] = "ready_for_execution"
+        state["recovery"] = {
+            "status": "applied", "stage": "run",
+            "action": "retry_excerpt_generation",
+            "recovered_at": timestamp, "preserved_failure": preserved_failure,
+            "execution_status": execution["status"],
+            "execution_sha256": execution_sha,
+            "recovery_kind": current["recovery_kind"],
+        }
+        state["updated_at"] = timestamp
+        event = _transition_event(
+            "excerpt_generation_failure_recovered", state, previous,
+            "ready_for_execution",
+            "GLM request failed before any Chinese excerpt write; retry authorized",
+            {"execution_status": execution["status"],
+             "execution_sha256": execution_sha,
+             "preserved_failure": preserved_failure,
+             "recovery_kind": current["recovery_kind"],
+             "safety_checks": current["checks"]}, timestamp,
+            f"excerpt-generation-retry|{post_id}|{execution_sha}")
         _persist_transition(
             root, _state_path(root, state["batch_id"], int(post_id)), state, event)
     return {**base, "changed": True, "writes_performed": True}
@@ -4146,6 +4303,11 @@ def recover(root, post_id, execute=False, source_factory=None,
             strategy, strategy_reasons = "retry_prepared_source_restart", [
                 "已重建的当前 generation 在生成摘要前发生瞬时网络错误；"
                 "中文源、空摘要和英文基线仍全部匹配"]
+    elif (current and current.get("recovery_kind") in {
+            "excerpt_generation_retry",
+            "legacy_prepared_excerpt_generation_retry"} and not reasons):
+        strategy, strategy_reasons = "retry_excerpt_generation", [
+            "GLM 摘要请求在写入中文摘要前失败；中文源、空摘要和英文基线仍全部匹配"]
     elif execution_status in {
             "chinese_excerpt_saved", "translation_started",
             "translation_failed"} and not source_changed:
@@ -4161,6 +4323,17 @@ def recover(root, post_id, execute=False, source_factory=None,
         if not remaining:
             strategy, strategy_reasons = "restart_from_current", [
                 "production Chinese title or content changed after pre-write"]
+    display_failure = failure
+    if strategy == "retry_excerpt_generation":
+        preserved = (state.get("recovery") or {}).get("preserved_failure")
+        if isinstance(preserved, dict):
+            display_failure = preserved
+    display_failure_text = "\n".join(str(display_failure.get(key, "")) for key in (
+        "reason", "stderr_summary", "stdout_summary", "error_summary"))
+    display_failure_category = _classify_subprocess_failure(
+        type("Failure", (), {
+            "returncode": display_failure.get("returncode", -1),
+            "stderr": display_failure_text, "stdout": ""})(), "preflight")["category"]
     evidence_path = _relative(_execution_path(root, post_id), root)
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -4172,14 +4345,14 @@ def recover(root, post_id, execute=False, source_factory=None,
                          if strategy == "rejected_excerpt_regeneration" else
                          (_structured_execution_failure(
                              _execution_details(root, article)) or {}).get(
-                                 "category", "unknown")),
+                                 "category", display_failure_category)),
         "execution_evidence": evidence_path,
         "production_source": (
             "unknown" if unavailable else "changed" if source_changed else "unchanged"),
         "strategy": strategy, "strategy_reasons": strategy_reasons,
         "will_execute": (
             "重新生成中文摘要，并继续安全执行"
-            if strategy == "rejected_excerpt_regeneration" else
+            if strategy in {"rejected_excerpt_regeneration", "retry_excerpt_generation"} else
             f"{strategy} -> execute_single_candidate"
             if strategy != "blocked" else "blocked"),
         "baseline_rebuild": "not_run", "reexecution": "not_run",
@@ -4207,6 +4380,15 @@ def recover(root, post_id, execute=False, source_factory=None,
         operation = _run_ready_once(
             root, execute=True, batch_id=state["batch_id"], post_id=post_id,
             runner=runner)
+    elif strategy == "retry_excerpt_generation":
+        restored = _restore_excerpt_generation_for_retry(
+            root, post_id, source_factory)
+        if not restored["eligible"] or not restored["changed"]:
+            return {**result, "strategy": "blocked",
+                    "strategy_reasons": restored["blocking_reasons"]}
+        operation = _run_ready_once(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner, recovery_retry=True)
     else:
         operation = resume(
             root, execute=True, batch_id=state["batch_id"], post_id=post_id,
@@ -4226,7 +4408,7 @@ def _recover_next_step(final_status, post_id):
         return "无"
     if final_status == "excerpt_failed":
         return (
-            "检查 rejected excerpt evidence；确认摘要校验问题后重新运行 "
+            "检查 rejected excerpt evidence 或摘要请求失败 evidence；确认问题后重新运行 "
             f"recover --post-id {int(post_id)}")
     if final_status == "ready_for_execution":
         return "生产连接恢复后重新运行同一条 recover --execute 命令"
@@ -4558,6 +4740,7 @@ def render_recover_text(result):
     strategy_labels = {
         "restart_from_current": "restart_from_current",
         "rejected_excerpt_regeneration": "rejected_excerpt_regeneration",
+        "retry_excerpt_generation": "retry_excerpt_generation",
         "retry_prepared_source_restart": "retry_prepared_source_restart",
         "resume": "resume", "retry_from_ready": "retry_from_ready",
         "blocked": "blocked", "none": "none"}

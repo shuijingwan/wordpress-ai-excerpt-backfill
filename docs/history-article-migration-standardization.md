@@ -49,7 +49,7 @@ SyntaxHighlighter 验收会输出 `ready`、`pending`、`abnormal`。它能读�
 - 每次只授权一个固定中文 ID。
 - 写入前按文章原子保存 `*.pre-write.json`。
 - 执行状态原子写入 `chinese-<id>.execution.json`。
-- 内部状态包括 `prepared`、`excerpt_rejected`、`excerpt_generated`、
+- 内部状态包括 `prepared`、`excerpt_generation_failed`、`excerpt_rejected`、`excerpt_generated`、
   `chinese_excerpt_saved`、`translation_started`、`translation_failed`、`completed`。
 - 仅摘要内容校验失败会在一次普通执行内最多尝试 3 次；其他错误不自动重试。
 - `--execute --resume` 只接受 `chinese_excerpt_saved`、`translation_started` 或
