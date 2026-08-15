@@ -1975,24 +1975,30 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("blocked", state["workflow_status"])
 
-    def test_resume_attempt_two_allowed_three_blocked_and_completed_excluded(self):
+    def test_resume_attempt_three_and_four_allowed_five_blocked(self):
         self.prepare_init_fixture()
         MODULE.init_state(self.root, apply=True)
         state_path = MODULE._state_path(
             self.root, "syntaxhighlighter-20260723-01", 401)
         state = json.loads(state_path.read_text(encoding="utf-8"))
         state["workflow_status"] = "translation_failed"
-        state["retry_counts"] = {"resume": 2}
+        state["retry_counts"] = {"resume": 3}
         MODULE._atomic_write_json(state_path, state)
         self.write_execution(401, 1401, "translation_failed")
 
         item = MODULE.resume(self.root, post_id=401)["items"][0]
         self.assertTrue(item["allowed"])
-        self.assertEqual(2, item["attempts"])
-        self.assertEqual(3, MODULE.MAX_RESUME_ATTEMPTS)
+        self.assertEqual(3, item["attempts"])
+        self.assertEqual(5, MODULE.MAX_RESUME_ATTEMPTS)
         self.assertEqual(2, MODULE.MAX_RUN_ATTEMPTS)
 
-        state["retry_counts"]["resume"] = 3
+        state["retry_counts"]["resume"] = 4
+        MODULE._atomic_write_json(state_path, state)
+        item = MODULE.resume(self.root, post_id=401)["items"][0]
+        self.assertTrue(item["allowed"])
+        self.assertEqual(4, item["attempts"])
+
+        state["retry_counts"]["resume"] = 5
         MODULE._atomic_write_json(state_path, state)
         item = MODULE.resume(self.root, post_id=401)["items"][0]
         self.assertFalse(item["allowed"])
@@ -2110,6 +2116,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertIn("preflight rejected", item["error"])
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("blocked", state["workflow_status"])
+        self.assertEqual(1, state["retry_counts"]["resume"])
         events = MODULE._read_events(MODULE._events_path(
             self.root, "syntaxhighlighter-20260723-01"))
         self.assertEqual(1, sum(
@@ -2926,6 +2933,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE._atomic_write_json(prewrite_path, prewrite)
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("blocked", state["workflow_status"])
+        state["retry_counts"]["resume"] = 3
+        MODULE._atomic_write_json(state_path, state)
         before = self.snapshot()
         result = MODULE.recover(
             self.root, 401, source_factory=lambda rows: source)
