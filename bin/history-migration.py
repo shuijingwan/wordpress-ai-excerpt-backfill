@@ -2894,6 +2894,9 @@ def resume(root, execute=False, batch_id=None, post_id=None,
                         root, state, "resume", attempt, result)
                 else:
                     failure = _classify_subprocess_failure(completed, "execute")
+                    structured = _structured_execution_failure(execution)
+                    if structured:
+                        failure.update(structured)
                     if failure["category"] == "executor_failed_without_state":
                         failure["category"] = "executor_failed_with_state"
                     result = _operation_result(

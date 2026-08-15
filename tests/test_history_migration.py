@@ -2044,6 +2044,45 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                     if event["event_type"] == "resume_attempt_failed"]
         self.assertEqual([1], [event["evidence"]["attempt"] for event in terminal])
 
+    def test_resume_structure_drift_uses_structured_wordpress_error(self):
+        state_path = self.prepare_translation_failed()
+
+        def execute(command, **kwargs):
+            path = self.write_execution(401, 1401, "translation_failed")
+            execution = json.loads(path.read_text(encoding="utf-8"))
+            execution["error_response"] = {
+                "code": "swq_full_article_gutenberg_structure_drift",
+                "message": "The Gutenberg block structure changed",
+                "data": None,
+            }
+            MODULE._atomic_write_json(path, execution)
+            return mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "HttpJsonError: HTTP request failed with status 500: "
+                    "swq_full_article_gutenberg_structure_drift"
+                ),
+            )
+
+        calls, runner = self.resume_runner(execute)
+        result = MODULE.resume(self.root, execute=True, post_id=401, runner=runner)
+        item = result["results"][0]
+        self.assertEqual(2, len(calls))
+        self.assertEqual("translation_failed", item["result"])
+        self.assertEqual("wordpress_api_error", item["category"])
+        self.assertNotEqual("transient_network_error", item["category"])
+        self.assertEqual(
+            "swq_full_article_gutenberg_structure_drift",
+            item["wordpress_code"],
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("wordpress_api_error", state["last_failure"]["reason"])
+        self.assertEqual(
+            "swq_full_article_gutenberg_structure_drift",
+            state["last_failure"]["wordpress_code"],
+        )
+
     def test_resume_stale_execution_cannot_impersonate_current_result(self):
         state_path = self.prepare_translation_failed()
         calls, runner = self.resume_runner(
