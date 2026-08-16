@@ -3248,6 +3248,87 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             runner=runner)
         self.assertEqual("completed", recovered["final_status"])
 
+    def prepare_source_restart_excerpt_generation_failure(self, excerpt):
+        state_path, source, content = self.prepare_source_restart(excerpt=excerpt)
+        rebuilt = MODULE.restart_from_current(
+            self.root, 401, apply=True, source_factory=lambda rows: source)
+        self.assertTrue(rebuilt["changed"])
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        execution.update({
+            "status": "excerpt_generation_failed",
+            "error": "network request failed: TimeoutError",
+            "excerpt_generation_attempts": 1,
+        })
+        MODULE._atomic_write_json(execution_path, execution)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "excerpt_failed",
+            "execution_evidence": {
+                "status": "excerpt_generation_failed",
+                "sha256": MODULE._file_sha256(execution_path),
+                "recovery_generation": execution["recovery_generation"],
+            },
+            "last_failure": {
+                "stage": "run", "reason": "transient_network_error",
+            },
+        })
+        MODULE._atomic_write_json(state_path, state)
+        return state_path, source, content, execution
+
+    def test_source_restart_nonempty_excerpt_generation_failure_retries(self):
+        _, source, _, execution = (
+            self.prepare_source_restart_excerpt_generation_failure("旧摘要"))
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", preview["strategy"])
+
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            if "--preflight-live" in command:
+                return mock.Mock(returncode=0, stdout="{}", stderr="")
+            self.write_execution(401, 1401, "completed")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        recovered = MODULE.recover(
+            self.root, 401, execute=True, source_factory=lambda rows: source,
+            runner=runner)
+        self.assertEqual("completed", recovered["final_status"])
+        self.assertTrue(all("--recovery-restart" in command for command in calls))
+        self.assertEqual("known_previous_generated_excerpt",
+                         execution["restart_excerpt_state"])
+
+    def test_source_restart_nonempty_excerpt_generation_failure_rejects_empty(self):
+        _, _, content, _ = (
+            self.prepare_source_restart_excerpt_generation_failure("旧摘要"))
+        emptied, _, _ = self.restart_source(
+            excerpt="", chinese_content=content)
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: emptied)
+        self.assertEqual("blocked", preview["strategy"])
+        self.assertIn("chinese_excerpt_known_for_restart",
+                      preview["strategy_reasons"])
+
+    def test_source_restart_nonempty_excerpt_generation_failure_rejects_other(self):
+        _, _, content, _ = (
+            self.prepare_source_restart_excerpt_generation_failure("旧摘要"))
+        changed, _, _ = self.restart_source(
+            excerpt="其他任意摘要", chinese_content=content)
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: changed)
+        self.assertEqual("blocked", preview["strategy"])
+        self.assertIn("chinese_excerpt_known_for_restart",
+                      preview["strategy_reasons"])
+
+    def test_source_restart_empty_excerpt_generation_failure_still_retries(self):
+        _, source, _, execution = (
+            self.prepare_source_restart_excerpt_generation_failure(""))
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", preview["strategy"])
+        self.assertEqual("empty", execution["restart_excerpt_state"])
+
     def test_recover_accepts_sha_bound_legacy_prepared_glm_http_400_failure(self):
         state_path, source, content = self.prepare_source_restart()
         from src.candidate_execution import sha256_text
@@ -3281,7 +3362,8 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         MODULE._atomic_write_json(state_path, state)
         preview = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
         self.assertEqual("retry_excerpt_generation", preview["strategy"])
-        self.assertEqual("http_client_error", preview["actual_error"])
+        self.assertEqual("preflight_failed", preview["actual_error"])
+        self.assertEqual("http_client_error", preview["original_recovery_cause"])
 
     def test_legacy_excerpt_recovery_preflight_failure_preserves_retry_basis(self):
         state_path, source, content = self.prepare_source_restart()
@@ -3303,7 +3385,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                 "status": "prepared", "sha256": MODULE._file_sha256(execution_path),
             },
             "last_failure": {
-                "stage": "run", "reason": "transient_network_error",
+                "stage": "run", "reason": "http_client_error",
                 "stderr_summary": "HttpJsonError: HTTP request failed with status 400",
             },
         })
@@ -3325,7 +3407,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual(execution_before, execution_path.read_bytes())
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual("blocked", state["workflow_status"])
-        self.assertEqual("transient_network_error", state["last_failure"]["reason"])
+        self.assertEqual("http_client_error", state["last_failure"]["reason"])
         self.assertEqual("preflight_failed", state["recovery"]["last_preflight_failure"]["category"])
         self.assertEqual(1, state["recovery"]["preflight_attempts"])
         retry = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
@@ -3337,11 +3419,11 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             MODULE._atomic_write_json(execution_path, {
                 "schema_version": 1, "chinese_post_id": 401,
                 "english_post_id": 1401, "status": "excerpt_generation_failed",
-                "error": "HTTP request failed with status 400",
+                "error": "network request failed: TimeoutError",
                 "excerpt_generation_attempts": 1,
             })
             return mock.Mock(returncode=1, stdout="", stderr=
-                "HttpJsonError: HTTP request failed with status 400")
+                "HttpJsonError: network request failed: TimeoutError")
 
         retried = MODULE.recover(
             self.root, 401, execute=True, source_factory=lambda rows: source,
@@ -3349,6 +3431,16 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual("excerpt_failed", retried["final_status"])
         execution = json.loads(execution_path.read_text(encoding="utf-8"))
         self.assertEqual("excerpt_generation_failed", execution["status"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("transient_network_error", state["last_failure"]["reason"])
+        self.assertEqual("http_client_error",
+                         state["recovery"]["preserved_failure"]["reason"])
+        self.assertNotEqual(state["recovery"]["execution_sha256"],
+                            MODULE._file_sha256(execution_path))
+        latest = MODULE.recover(self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", latest["strategy"])
+        self.assertEqual("transient_network_error", latest["actual_error"])
+        self.assertEqual("http_client_error", latest["original_recovery_cause"])
 
     def test_recover_accepts_legacy_prepared_restart_without_coordination_generation(self):
         """Pre-fix coordination evidence lacks generation but remains SHA-bound."""
@@ -3448,6 +3540,71 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             self.root, 401, confirmed=True, source_factory=lambda rows: source)
         self.assertTrue(result["changed"])
         self.assertEqual("completed", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+    def prepare_excerpt_failed_manual_completion(self, excerpt="人工补充的中文摘要"):
+        state_path, source, _ = self.prepare_source_restart(excerpt=excerpt)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow_status"] = "excerpt_failed"
+        MODULE._atomic_write_json(state_path, state)
+        return state_path, source
+
+    def test_mark_manual_completed_excerpt_failed_requires_chinese_excerpt(self):
+        state_path, source = self.prepare_excerpt_failed_manual_completion(excerpt="")
+        before = state_path.read_bytes()
+        result = MODULE.mark_manual_completed(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertFalse(result["writes_performed"])
+        self.assertIn("Chinese excerpt is empty", result["blocking_reasons"])
+        self.assertEqual(before, state_path.read_bytes())
+
+    def test_mark_manual_completed_excerpt_failed_preview_is_readonly_when_complete(self):
+        state_path, source = self.prepare_excerpt_failed_manual_completion()
+        before = state_path.read_bytes()
+        result = MODULE.mark_manual_completed(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(result["eligible"])
+        self.assertFalse(result["writes_performed"])
+        self.assertEqual(before, state_path.read_bytes())
+
+    def test_mark_manual_completed_confirms_complete_excerpt_failed(self):
+        state_path, source = self.prepare_excerpt_failed_manual_completion()
+        execution_path = MODULE._execution_path(self.root, 401)
+        execution_before = execution_path.read_bytes()
+        result = MODULE.mark_manual_completed(
+            self.root, 401, confirmed=True, source_factory=lambda rows: source)
+        self.assertTrue(result["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["workflow_status"])
+        self.assertEqual("confirmed", state["manual_completion"]["status"])
+        self.assertEqual("manual_external", state["manual_completion"]["method"])
+        self.assertEqual(execution_before, execution_path.read_bytes())
+
+    def test_mark_manual_completed_excerpt_failed_requires_english_content(self):
+        state_path, source = self.prepare_excerpt_failed_manual_completion()
+        original_get = source.get_post
+        def get_post(post_id):
+            post = original_get(post_id)
+            if int(post_id) == 1401:
+                post = dict(post); post["content"] = {"raw": ""}
+            return post
+        source.get_post = get_post
+        result = MODULE.mark_manual_completed(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("English content is empty", result["blocking_reasons"])
+        self.assertEqual("excerpt_failed", json.loads(
+            state_path.read_text(encoding="utf-8"))["workflow_status"])
+
+    def test_mark_manual_completed_excerpt_failed_requires_polylang(self):
+        state_path, source = self.prepare_excerpt_failed_manual_completion()
+        source.check = lambda chinese, english: {"chinese_post_id": chinese}
+        result = MODULE.mark_manual_completed(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertFalse(result["eligible"])
+        self.assertIn("Polylang relation mismatch", result["blocking_reasons"])
+        self.assertEqual("excerpt_failed", json.loads(
             state_path.read_text(encoding="utf-8"))["workflow_status"])
 
     def test_mark_manual_completed_rejects_invalid_polylang(self):

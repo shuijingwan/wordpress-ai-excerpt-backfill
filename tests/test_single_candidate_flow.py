@@ -198,7 +198,8 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(1, translator.calls)
             self.assertEqual("Translated title", wp.posts[1001]["title"]["raw"])
 
-    def prepare_recovery_restart(self, directory, wp, excerpt):
+    def prepare_recovery_restart(self, directory, wp, excerpt,
+                                 status="prepared"):
         wp.posts[1]["excerpt"]["raw"] = excerpt
         backup_path = Path(directory) / "chinese-1.pre-write.json"
         backup_path.write_text(json.dumps({
@@ -210,7 +211,7 @@ class SingleCandidateFlowTest(unittest.TestCase):
         state_path = Path(directory) / "chinese-1.execution.json"
         state_path.write_text(json.dumps({
             "schema_version": 1, "chinese_post_id": 1,
-            "english_post_id": 1001, "status": "prepared",
+            "english_post_id": 1001, "status": status,
             "backup_path": str(backup_path), "recovery_generation": 1,
             "restart_excerpt_state": (
                 "known_previous_generated_excerpt" if excerpt else "empty"),
@@ -228,6 +229,20 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual(1, glm.calls)
             self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
             self.assertNotEqual(old_excerpt, wp.posts[1]["excerpt"]["raw"])
+
+    def test_failed_recovery_generation_reuses_exact_pre_run_excerpt_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_excerpt = "这是上一代生成并已知的中文摘要。" * 6
+            wp = MockWp()
+            self.prepare_recovery_restart(
+                directory, wp, old_excerpt, status="excerpt_generation_failed")
+            glm = MockGlm(); translator = MockTranslator(wp)
+            flow, _, _, _, _ = self.make_flow(directory, wp, glm, translator)
+            result = flow.execute(1)
+            self.assertEqual("completed", result["status"])
+            self.assertEqual(1, glm.calls)
+            self.assertEqual(1, translator.calls)
+            self.assertEqual(VALID_EXCERPT, wp.posts[1]["excerpt"]["raw"])
 
     def test_rejected_excerpt_recovery_generation_regenerates_sqlstate_excerpt(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -530,11 +545,17 @@ class SingleCandidateFlowTest(unittest.TestCase):
             self.assertEqual([], wp.update_calls); self.assertEqual(0, translator.calls)
 
     def test_glm_http_failure_is_persisted_before_any_wordpress_mutation(self):
+        class DiagnosticFailingGlm(MockGlm):
+            def request_diagnostics(self, title, content):
+                return {"cleaned_content_characters": len(content),
+                        "payload_utf8_bytes": 1234}
+            def generate(self, title, content):
+                self.calls += 1
+                raise HttpJsonError("HTTP request failed with status 400",
+                                    status=400, response={"error": {"code": "1301"}})
         with tempfile.TemporaryDirectory() as directory:
             wp = MockWp()
-            glm = SequenceGlm([HttpJsonError(
-                "HTTP request failed with status 400", response={
-                    "code": "invalid_request", "message": "bad payload"})])
+            glm = DiagnosticFailingGlm()
             flow, _, _, _, _ = self.make_flow(
                 directory, wp, glm, MockTranslator(wp))
             with self.assertRaisesRegex(HttpJsonError, "status 400"):
@@ -542,7 +563,10 @@ class SingleCandidateFlowTest(unittest.TestCase):
             state = json.loads((Path(directory) / "chinese-1.execution.json").read_text())
             self.assertEqual("excerpt_generation_failed", state["status"])
             self.assertEqual(1, state["excerpt_generation_attempts"])
-            self.assertEqual("invalid_request", state["error_response"]["code"])
+            self.assertEqual(400, state["http_status"])
+            self.assertEqual("1301", state["error_response"]["error"]["code"])
+            self.assertEqual(1234, state["glm_request"]["payload_utf8_bytes"])
+            self.assertNotIn(CONTENT, json.dumps(state, ensure_ascii=False))
             self.assertEqual([], wp.update_calls)
 
     def test_resume_rejects_excerpt_rejected_and_regular_retry_calls_glm_again(self):

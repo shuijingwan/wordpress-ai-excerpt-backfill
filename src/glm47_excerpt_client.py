@@ -1,6 +1,7 @@
 """Minimal GLM 4.7 client for Chinese WordPress excerpts."""
 
 import os
+import json
 
 from src.candidate_execution import SafetyError, validate_generated_excerpt
 from src.http_json import HttpJsonError, request_json, urllib_transport
@@ -42,6 +43,20 @@ class Glm47ExcerptClient:
             ],
             "thinking": {"type": "disabled"}, "do_sample": False,
             "stream": False, "max_tokens": 512,
+        }
+
+    @classmethod
+    def request_diagnostics(cls, title, cleaned_content):
+        """Return bounded metadata for failure evidence, never request text."""
+        payload = cls.payload(title, cleaned_content)
+        return {
+            "model": payload["model"],
+            "title_characters": len(title),
+            "title_utf8_bytes": len(title.encode("utf-8")),
+            "cleaned_content_characters": len(cleaned_content),
+            "cleaned_content_utf8_bytes": len(cleaned_content.encode("utf-8")),
+            "payload_utf8_bytes": len(json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")),
         }
 
     def generate(self, title, cleaned_content):

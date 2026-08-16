@@ -8,10 +8,26 @@ import urllib.request
 
 
 class HttpJsonError(RuntimeError):
-    def __init__(self, message, response=None, response_excerpt=None):
+    def __init__(self, message, response=None, response_excerpt=None, status=None):
         super().__init__(message)
         self.response = response
         self.response_excerpt = response_excerpt
+        self.status = status
+
+
+def _response_error_detail(response):
+    if not isinstance(response, dict):
+        return ""
+    error = response.get("error")
+    values = (
+        (response.get("code"), response.get("message"))
+        if not isinstance(error, dict) else
+        (error.get("code"), error.get("message"))
+    )
+    code, message = values
+    if not code:
+        return ""
+    return f": {code}" + (f": {message}" if message else "")
 
 
 def _sensitive_header_values(headers):
@@ -71,13 +87,10 @@ def request_json(transport, method, url, headers, payload=None, timeout=60):
         response = _redact(parsed, secrets) if isinstance(parsed, dict) else None
         excerpt = None if response is not None else _plain_response_excerpt(
             text if isinstance(text, str) else "", secrets)
-        detail = ""
-        if response and response.get("code"):
-            detail = f": {response['code']}"
-            if response.get("message"):
-                detail += f": {response['message']}"
+        detail = _response_error_detail(response)
         raise HttpJsonError(f"HTTP request failed with status {status}{detail}",
-                            response=response, response_excerpt=excerpt)
+                            response=response, response_excerpt=excerpt,
+                            status=int(status))
     try:
         value = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:

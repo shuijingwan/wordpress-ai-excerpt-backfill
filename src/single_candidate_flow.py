@@ -19,22 +19,32 @@ def raw_field(post, name):
     return value if isinstance(value, str) else ""
 
 
+def recovery_restart_excerpt_matches_baseline(
+        state, backup, chinese_id, english_id, current_excerpt):
+    """Return whether production still matches a restart generation baseline."""
+    restart_state = state.get("restart_excerpt_state")
+    expected_sha = state.get("expected_pre_run_excerpt_sha256")
+    return bool(
+        restart_state in {"empty", "known_previous_generated_excerpt"}
+        and isinstance(expected_sha, str) and len(expected_sha) == 64
+        and state.get("status") in {"prepared", "excerpt_generation_failed"}
+        and state.get("chinese_post_id") == int(chinese_id)
+        and state.get("english_post_id") == int(english_id)
+        and state.get("recovery_generation") is not None
+        and backup.get("recovery_generation") == state.get("recovery_generation")
+        and (backup.get("sha256") or {}).get("chinese_excerpt") == expected_sha
+        and sha256_text(current_excerpt) == expected_sha
+        and (restart_state != "empty" or not current_excerpt.strip())
+        and (restart_state != "known_previous_generated_excerpt"
+             or bool(current_excerpt.strip()))
+    )
+
+
 def validate_recovery_restart_excerpt(state, backup, chinese_id, english_id,
                                       current_excerpt):
     """Authorize only the exact excerpt captured by a restart generation."""
-    restart_state = state.get("restart_excerpt_state")
-    expected_sha = state.get("expected_pre_run_excerpt_sha256")
-    if (restart_state not in {"empty", "known_previous_generated_excerpt"}
-            or not isinstance(expected_sha, str) or len(expected_sha) != 64
-            or state.get("status") != "prepared"
-            or state.get("chinese_post_id") != int(chinese_id)
-            or state.get("english_post_id") != int(english_id)
-            or backup.get("recovery_generation") != state.get("recovery_generation")
-            or (backup.get("sha256") or {}).get("chinese_excerpt") != expected_sha
-            or sha256_text(current_excerpt) != expected_sha
-            or (restart_state == "empty" and current_excerpt.strip())
-            or (restart_state == "known_previous_generated_excerpt"
-                and not current_excerpt.strip())):
+    if not recovery_restart_excerpt_matches_baseline(
+            state, backup, chinese_id, english_id, current_excerpt):
         raise SafetyError("recovery restart Chinese excerpt no longer matches baseline")
     return True
 
@@ -443,6 +453,11 @@ class SingleCandidateFlow:
                 })
             self._save_state(state, "prepared")
             cleaned_content = extract_excerpt_source(live["chinese_content"])
+            request_diagnostics = None
+            diagnostic_builder = getattr(self.glm, "request_diagnostics", None)
+            if callable(diagnostic_builder):
+                request_diagnostics = diagnostic_builder(
+                    live["chinese_title"], cleaned_content)
             rejected_paths = []
             excerpt = None
             for attempt in range(1, MAX_EXCERPT_ATTEMPTS + 1):
@@ -475,6 +490,11 @@ class SingleCandidateFlow:
                         "error": str(error),
                         "excerpt_generation_attempts": attempt,
                     }
+                    if isinstance(request_diagnostics, dict):
+                        diagnostics["glm_request"] = request_diagnostics
+                    http_status = getattr(error, "status", None)
+                    if isinstance(http_status, int):
+                        diagnostics["http_status"] = http_status
                     response = getattr(error, "response", None)
                     if isinstance(response, dict):
                         diagnostics["error_response"] = response

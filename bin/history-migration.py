@@ -1968,7 +1968,8 @@ def _legacy_prepared_excerpt_http_failure(state, execution_sha):
     return bool(
         state.get("workflow_status") == "blocked"
         and failure.get("stage") == "run"
-        and failure.get("reason") == "transient_network_error"
+        and failure.get("reason") in {
+            "transient_network_error", "http_client_error"}
         and re.search(r"\b(?:http(?: request)? (?:failed )?with status|http error) 400\b",
                       text, re.IGNORECASE)
         and evidence.get("status") == "prepared"
@@ -2016,6 +2017,7 @@ def _execution_details(root, article):
         "error_response": error_response,
         "error_response_excerpt": _safe_subprocess_summary(
             value.get("error_response_excerpt", "")),
+        "error_summary": _safe_subprocess_summary(value.get("error", "")),
         "excerpt_generation_attempts": (
             value.get("excerpt_generation_attempts")
             if isinstance(value.get("excerpt_generation_attempts"), int)
@@ -2049,6 +2051,16 @@ def _structured_execution_failure(execution):
     message = response.get("message")
     if status == "excerpt_generation_failed" and code:
         category = "glm_api_error"
+    elif status == "excerpt_generation_failed":
+        error_summary = (execution or {}).get("error_summary", "")
+        if error_summary:
+            failure = _classify_subprocess_failure(type("Failure", (), {
+                "returncode": -1, "stderr": error_summary, "stdout": ""})(),
+                "execute")
+            if failure["category"] != "executor_failed_without_state":
+                return {"category": failure["category"],
+                        "error_summary": error_summary}
+        return None
     elif code == "swq_full_article_token_validation_failed":
         category = "protected_token_validation_error"
     elif code:
@@ -3590,7 +3602,9 @@ def _manual_external_completion_plan(root, post_id, source_factory=None):
     if state["workflow_status"] == "completed":
         reasons.append("article is already completed")
         return root, article, state, reasons
-    if state["workflow_status"] not in {"translation_failed", "blocked"}:
+    excerpt_failed = state["workflow_status"] == "excerpt_failed"
+    if state["workflow_status"] not in {
+            "translation_failed", "blocked", "excerpt_failed"}:
         reasons.append(
             f"workflow_status {state['workflow_status']} is not eligible for manual completion")
     try:
@@ -3619,6 +3633,8 @@ def _manual_external_completion_plan(root, post_id, source_factory=None):
         (bool(_raw_post_field(english, "content").strip()), "English content is empty"),
     )
     reasons.extend(reason for passed, reason in checks if not passed)
+    if excerpt_failed and not _raw_post_field(chinese, "excerpt").strip():
+        reasons.append("Chinese excerpt is empty")
     return root, article, state, reasons
 
 
@@ -3699,7 +3715,8 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
                                allow_prepared_source_restart_retry=False):
     """Read production and prove an old failed execution can be discarded."""
     from src.candidate_execution import sha256_text
-    from src.single_candidate_flow import build_live
+    from src.single_candidate_flow import (
+        build_live, recovery_restart_excerpt_matches_baseline)
     from src.batch_readonly_ssh import BatchReadonlySshSource
 
     root, batches, fixed, _, states = _context(Path(root).resolve())
@@ -3821,9 +3838,26 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
     current_excerpt_empty = not current_excerpt.strip()
     current_matches_old_generated = bool(
         old_generated_nonempty and current_excerpt == old_generated_excerpt)
+    source_restart = state.get("source_restart_recovery") or {}
+    source_restart_generation = bool(
+        recovery_kind == "excerpt_generation_retry"
+        and source_restart.get("status") == "applied"
+        and source_restart.get("generation") == state.get("recovery_generation")
+        and execution.get("recovery_generation") == state.get("recovery_generation")
+        and execution.get("restart_excerpt_state")
+            == source_restart.get("restart_excerpt_state")
+        and execution.get("expected_pre_run_excerpt_sha256")
+            == source_restart.get("expected_pre_run_excerpt_sha256"))
+    current_matches_restart_baseline = bool(
+        source_restart_generation
+        and recovery_restart_excerpt_matches_baseline(
+            execution, prewrite, article["chinese_post_id"],
+            article["english_post_id"], current_excerpt))
     excerpt_state = (
         "empty" if current_excerpt_empty else
         "known_previous_generated_excerpt" if current_matches_old_generated else
+        execution.get("restart_excerpt_state")
+            if current_matches_restart_baseline else
         "unknown_nonempty"
     )
     checks = {
@@ -3836,7 +3870,9 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
         "syntaxhighlighter_zero": analysis["syntaxhighlighter_count"] == 0,
         "chinese_excerpt_known_for_restart": (
             current_excerpt_empty if recovery_kind == "rejected_excerpt_regeneration"
-            else current_excerpt_empty or current_matches_old_generated),
+            else current_matches_restart_baseline
+                if source_restart_generation
+                else current_excerpt_empty or current_matches_old_generated),
         "execution_eligibility": (
             live["special_mixed_structure_eligible"]
             if special_validated_mixed else live["phase1_eligible"]),
@@ -3874,6 +3910,8 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
         "old_generated_excerpt_sha256": (
             sha256_text(old_generated_excerpt) if old_generated_nonempty else None),
         "current_excerpt_matches_old_generated": current_matches_old_generated,
+        "current_excerpt_matches_restart_baseline":
+            current_matches_restart_baseline,
         "restart_excerpt_state": excerpt_state,
         "current_code_block_pro_count": counts.get(
             "kevinbatdorf/code-block-pro", 0),
@@ -3988,7 +4026,9 @@ def _restore_excerpt_generation_for_retry(root, post_id, source_factory=None):
         timestamp = datetime.now(timezone.utc).isoformat()
         previous = state["workflow_status"]
         execution_sha = _file_sha256(_execution_path(root, post_id))
-        preserved_failure = dict(state.get("last_failure") or {})
+        preserved_failure = dict(
+            (state.get("recovery") or {}).get("preserved_failure")
+            or state.get("last_failure") or {})
         state["workflow_status"] = "ready_for_execution"
         state["recovery"] = {
             "status": "applied", "stage": "run",
@@ -4326,17 +4366,15 @@ def recover(root, post_id, execute=False, source_factory=None,
         if not remaining:
             strategy, strategy_reasons = "restart_from_current", [
                 "production Chinese title or content changed after pre-write"]
-    display_failure = failure
-    if strategy == "retry_excerpt_generation":
-        preserved = (state.get("recovery") or {}).get("preserved_failure")
-        if isinstance(preserved, dict):
-            display_failure = preserved
-    display_failure_text = "\n".join(str(display_failure.get(key, "")) for key in (
-        "reason", "stderr_summary", "stdout_summary", "error_summary"))
-    display_failure_category = _classify_subprocess_failure(
-        type("Failure", (), {
-            "returncode": display_failure.get("returncode", -1),
-            "stderr": display_failure_text, "stdout": ""})(), "preflight")["category"]
+    preserved_failure = (state.get("recovery") or {}).get("preserved_failure")
+    original_recovery_cause = None
+    if isinstance(preserved_failure, dict):
+        preserved_text = "\n".join(str(preserved_failure.get(key, "")) for key in (
+            "reason", "stderr_summary", "stdout_summary", "error_summary"))
+        original_recovery_cause = _classify_subprocess_failure(
+            type("Failure", (), {
+                "returncode": preserved_failure.get("returncode", -1),
+                "stderr": preserved_text, "stdout": ""})(), "preflight")["category"]
     evidence_path = _relative(_execution_path(root, post_id), root)
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -4348,7 +4386,8 @@ def recover(root, post_id, execute=False, source_factory=None,
                          if strategy == "rejected_excerpt_regeneration" else
                          (_structured_execution_failure(
                              _execution_details(root, article)) or {}).get(
-                                 "category", display_failure_category)),
+                                 "category", failure_category)),
+        "original_recovery_cause": original_recovery_cause,
         "execution_evidence": evidence_path,
         "production_source": (
             "unknown" if unavailable else "changed" if source_changed else "unchanged"),
@@ -4726,7 +4765,7 @@ def render_manual_completion_text(result):
         f"模式: {result['mode']}",
         f"文章: zh={result['chinese_post_id']} en={result['english_post_id']}",
         f"当前状态: {result['previous_status']}",
-        "只读检查: post ID、publish、Polylang、英文标题和正文",
+        "只读检查: post ID、publish、Polylang、英文标题和正文（excerpt_failed 另检中文摘要）",
         f"允许人工完成: {'是' if result['eligible'] else '否'}",
         f"写入操作: {'是' if result['writes_performed'] else '否'}",
     ]
@@ -4756,6 +4795,9 @@ def render_recover_text(result):
         f"生产中文源: {source_labels[result['production_source']]}",
         f"恢复策略: {strategy_labels[result['strategy']]}",
     ]
+    if result.get("original_recovery_cause"):
+        lines.insert(4, "原始恢复根因: " + error_labels.get(
+            result["original_recovery_cause"], result["original_recovery_cause"]))
     if result["strategy"] == "none":
         lines.extend([
             "将执行: 无", "写入操作: 否",

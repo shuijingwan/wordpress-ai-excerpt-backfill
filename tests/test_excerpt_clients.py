@@ -78,6 +78,17 @@ class GlmClientTest(unittest.TestCase):
             Glm47ExcerptClient(api_key="TOP-SECRET-KEY", transport=transport).generate("标题", "正文")
         self.assertNotIn("TOP-SECRET-KEY", str(raised.exception))
 
+    def test_request_diagnostics_exclude_title_and_content(self):
+        diagnostics = Glm47ExcerptClient.request_diagnostics(
+            "秘密标题", "秘密正文" * 10)
+        self.assertEqual("glm-4.7", diagnostics["model"])
+        self.assertEqual(4, diagnostics["title_characters"])
+        self.assertEqual(len(("秘密正文" * 10).encode("utf-8")),
+                         diagnostics["cleaned_content_utf8_bytes"])
+        self.assertGreater(diagnostics["payload_utf8_bytes"], 0)
+        self.assertNotIn("秘密标题", json.dumps(diagnostics, ensure_ascii=False))
+        self.assertNotIn("秘密正文", json.dumps(diagnostics, ensure_ascii=False))
+
 
 class WordPressClientTest(unittest.TestCase):
     def test_excerpt_update_body_has_only_excerpt(self):
@@ -146,6 +157,14 @@ class HttpErrorDiagnosticsTest(unittest.TestCase):
         self.assertNotIn(cookie, error.response_excerpt)
         self.assertNotIn(nonce, error.response_excerpt)
         self.assertNotIn(authorization, error.response_excerpt)
+
+    def test_nested_glm_error_includes_status_and_detail(self):
+        response = {"error": {"code": "1301", "message": "content filtered"}}
+        with self.assertRaises(HttpJsonError) as raised:
+            request_json(RecordingTransport(response, status=400), "POST",
+                         "https://example.invalid", {}, {})
+        self.assertEqual(400, raised.exception.status)
+        self.assertIn("1301: content filtered", str(raised.exception))
 
 
 if __name__ == "__main__":
