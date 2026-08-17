@@ -2393,10 +2393,13 @@ def _execution_artifacts(root, post_id):
     backup_root = root / "data/backups"
     if not backup_root.exists():
         return []
+    prefix = f"chinese-{int(post_id)}"
     return sorted(
         _relative(path, root)
-        for path in backup_root.rglob(f"chinese-{int(post_id)}*")
+        for path in backup_root.rglob(f"{prefix}*")
         if path.is_file()
+        and (path.name.startswith(prefix + ".")
+             or path.name.startswith(prefix + "-"))
     )
 
 
@@ -2448,6 +2451,30 @@ def _record_recovery_preflight_failure(root, state, failure):
         "recovery preflight failed before a candidate execution was started",
         {"recovery": recovery, "preflight_failure": evidence}, timestamp,
         f"recovery-preflight|{attempts}|{timestamp}")
+    _persist_transition(
+        root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
+        state, event)
+
+
+def _record_preflight_failure(root, state, failure):
+    """Persist a preflight boundary failure before any executor can start."""
+    previous = state["workflow_status"]
+    timestamp = datetime.now(timezone.utc).isoformat()
+    state["workflow_status"] = "blocked"
+    state["last_failure"] = {
+        "stage": "preflight", "attempt": None,
+        "reason": failure["category"], "occurred_at": timestamp,
+        "returncode": failure.get("returncode"),
+        "stderr_summary": failure.get("stderr_summary", ""),
+        "stdout_summary": failure.get("stdout_summary", ""),
+    }
+    state["updated_at"] = timestamp
+    event = _transition_event(
+        "preflight_attempt_failed", state, previous, "blocked",
+        "preflight failed before execution evidence or WordPress mutation",
+        {"stage": "preflight", "artifacts": _execution_artifacts(
+            root, state["chinese_post_id"]), **failure},
+        timestamp, f"preflight|blocked|{timestamp}")
     _persist_transition(
         root, _state_path(root, state["batch_id"], state["chinese_post_id"]),
         state, event)
@@ -2605,6 +2632,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                     failure = _exception_failure(error, "preflight")
                     if recovery_retry:
                         _record_recovery_preflight_failure(root, state, failure)
+                    elif failure["category"] != "production_readonly_unavailable":
+                        _record_preflight_failure(root, state, failure)
                     finish(_operation_result(
                         item, ("production_readonly_unavailable"
                                if failure["category"] ==
@@ -2619,6 +2648,8 @@ def _run_ready_once(root, execute=False, batch_id=None, post_id=None,
                         preflight, "preflight")
                     if recovery_retry:
                         _record_recovery_preflight_failure(root, state, failure)
+                    elif failure["category"] != "production_readonly_unavailable":
+                        _record_preflight_failure(root, state, failure)
                     finish(_operation_result(
                         item, ("production_readonly_unavailable"
                                if failure["category"] ==
@@ -3755,7 +3786,10 @@ def _restart_from_current_plan(root, post_id, source_factory=None,
         allowed_workflow_statuses = {"excerpt_failed"}
         if _excerpt_generation_recovery_active(
                 state, _file_sha256(execution_path)):
-            allowed_workflow_statuses.add("blocked")
+            # A retry can fail in preflight before replacing the old execution
+            # file.  The old evidence remains usable only through this exact
+            # SHA-bound recovery authorization.
+            allowed_workflow_statuses.update({"blocked", "ready_for_execution"})
     elif (execution_status == "prepared" and _legacy_prepared_excerpt_http_failure(
             state, _file_sha256(execution_path))):
         recovery_kind = "legacy_prepared_excerpt_generation_retry"
@@ -4209,6 +4243,149 @@ def restart_from_current(root, post_id, apply=False, source_factory=None,
                 "archive": _relative(archive, root)}
 
 
+def _fresh_preflight_retry_plan(root, post_id, source_factory=None):
+    """Prove that a candidate which never crossed preflight is safe to run."""
+    from src.analyzer import analyze_content
+    from src.batch_readonly_ssh import BatchReadonlySshSource
+    from src.single_candidate_flow import build_live
+
+    root, batches, fixed, _, states = _context(Path(root).resolve())
+    article = fixed.get(int(post_id))
+    if article is None:
+        raise ReadError(f"Chinese post {post_id} is outside fixed batches")
+    state = states.get(int(post_id))
+    if state is None:
+        raise ReadError(f"coordination state is missing for Chinese post {post_id}")
+    reasons = []
+    artifacts = _execution_artifacts(root, post_id)
+    if artifacts:
+        reasons.append("execution or write evidence exists: " + ",".join(artifacts))
+    if state.get("execution_evidence") is not None:
+        reasons.append("coordination execution evidence exists")
+    failure = state.get("last_failure") or {}
+    legacy_ready = bool(
+        state["workflow_status"] == "ready_for_execution" and not failure)
+    transient_preflight = bool(
+        failure.get("stage") in {"preflight", "run"}
+        and failure.get("reason") == "transient_network_error")
+    if state["workflow_status"] not in {"ready_for_execution", "blocked"}:
+        reasons.append(
+            f"workflow_status {state['workflow_status']} is not preflight-recoverable")
+    if not (legacy_ready or transient_preflight):
+        reasons.append("last_failure is not a transient network preflight failure")
+    if state["workflow_status"] == "blocked" and not transient_preflight:
+        reasons.append("blocked state lacks a transient preflight failure record")
+    validation = state.get("validation_evidence") or {}
+    state_checks = {
+        "manual_conversion_confirmed": (
+            state.get("manual_conversion", {}).get("status") == "confirmed"),
+        "gutenberg_normalization_confirmed": (
+            not state.get("gutenberg_normalization")
+            or state.get("gutenberg_normalization", {}).get("status")
+                == "confirmed"),
+        "language_review_confirmed": (
+            state.get("language_review", {}).get("status") == "confirmed"),
+        "validation_ready": (
+            validation.get("status") == "ready"
+            and not validation.get("failure_reasons")),
+    }
+    try:
+        _validation_still_valid(root, state)
+        manifest_path, manifest = _restart_manifest_row(root, state, article)
+        config = json.loads(
+            (root / "config/classification.json").read_text(encoding="utf-8"))
+        source = (source_factory([article["source_row"]]) if source_factory else
+                  BatchReadonlySshSource.fetch([article["source_row"]]))
+        chinese = source.get_post(article["chinese_post_id"])
+        english = source.get_post(article["english_post_id"])
+        batch = next(item for item in batches
+                     if item["batch_id"] == article["batch_id"])
+        live = build_live(
+            manifest, chinese, english,
+            source.check(article["chinese_post_id"], article["english_post_id"]),
+            config, special_validated_mixed=(
+                _special_validated_mixed_recovery_allowed(batch, state)))
+        analysis = analyze_content(live["chinese_content"], config)
+        block_counts = analysis["blocks"]["counts"]
+        expected_cbp = int(manifest.get("expected_code_block_pro_count") or 0)
+        expected_syntax = int(
+            manifest.get("expected_syntaxhighlighter_count") or 0)
+        checks = {
+            **state_checks,
+            "chinese_id": chinese.get("id") == article["chinese_post_id"],
+            "english_id": english.get("id") == article["english_post_id"],
+            "chinese_publish": live["chinese_status"] == "publish",
+            "english_publish": live["english_status"] == "publish",
+            "polylang_english": (
+                live["linked_english_post_id"] == article["english_post_id"]),
+            "chinese_title_unchanged": (
+                live["chinese_title"] == manifest["chinese_title"]),
+            "chinese_content_unchanged": (
+                live["chinese_content_sha256"]
+                == manifest["chinese_content_sha256"]),
+            "chinese_excerpt_empty": live["chinese_excerpt_empty"],
+            "gutenberg": live["is_gutenberg"],
+            "code_block_pro_count": (
+                block_counts.get("kevinbatdorf/code-block-pro", 0)
+                == expected_cbp),
+            "syntaxhighlighter_count": (
+                analysis["syntaxhighlighter_count"] == expected_syntax),
+            "execution_eligibility": (
+                live["special_mixed_structure_eligible"]
+                if _special_validated_mixed_recovery_allowed(batch, state)
+                else live["phase1_eligible"]),
+            "english_title_unchanged": (
+                live["english_title_sha256"] == manifest["english_title_sha256"]),
+            "english_excerpt_unchanged": (
+                live["english_excerpt_sha256"]
+                == manifest["english_excerpt_sha256"]),
+            "english_content_unchanged": (
+                live["english_content_sha256"]
+                == manifest["english_content_sha256"]),
+        }
+        reasons.extend(name for name, passed in checks.items() if not passed)
+        current = {"checks": checks, "live": live,
+                   "manifest_path": manifest_path}
+    except (SafetyError, OSError, UnicodeError, json.JSONDecodeError,
+            ReadError) as error:
+        reasons.extend(name for name, passed in state_checks.items() if not passed)
+        reasons.append(f"production read-only check failed: {error}")
+        current = None
+    return root, article, state, current, reasons
+
+
+def _authorize_fresh_preflight_retry(root, post_id, source_factory=None):
+    """Audit and restore a zero-artifact transient preflight retry."""
+    root, _, state, _, reasons = _fresh_preflight_retry_plan(
+        root, post_id, source_factory)
+    if reasons:
+        return False, reasons
+    with InitLock(root):
+        root, _, state, current, reasons = _fresh_preflight_retry_plan(
+            root, post_id, source_factory)
+        if reasons:
+            return False, reasons
+        timestamp = datetime.now(timezone.utc).isoformat()
+        previous = state["workflow_status"]
+        preserved_failure = dict(state.get("last_failure") or {})
+        state["workflow_status"] = "ready_for_execution"
+        state["recovery"] = {
+            "status": "applied", "action": "preflight_transient_retry",
+            "recovered_at": timestamp, "preserved_failure": preserved_failure,
+        }
+        state["updated_at"] = timestamp
+        event = _transition_event(
+            "preflight_transient_retry_authorized", state, previous,
+            "ready_for_execution",
+            "zero-artifact preflight retry authorized after fresh production checks",
+            {"artifacts": [], "preserved_failure": preserved_failure,
+             "safety_checks": current["checks"]}, timestamp,
+            f"preflight-transient-retry|{post_id}|{timestamp}")
+        _persist_transition(
+            root, _state_path(root, state["batch_id"], int(post_id)), state, event)
+    return True, []
+
+
 def recover(root, post_id, execute=False, source_factory=None,
             runner=subprocess.run):
     """Select and, when requested, run one evidence-based recovery path."""
@@ -4309,6 +4486,57 @@ def recover(root, post_id, execute=False, source_factory=None,
         _, _, _, _, fresh_states = _context(root)
         final_status = fresh_states[int(post_id)]["workflow_status"]
         return {**base, "reexecution": (
+                    "completed" if item and item["result"] == "completed"
+                    else "failed"), "final_status": final_status,
+                "operation_result": item,
+                "next_step": _recover_next_step(final_status, post_id),
+                "writes_performed": True}
+    if not artifacts:
+        root, article, state, current, fresh_reasons = (
+            _fresh_preflight_retry_plan(root, post_id, source_factory))
+        strategy = "preflight_transient_retry" if not fresh_reasons else "blocked"
+        actual_error = (
+            failure.get("reason") or
+            ("preflight_failed" if state["workflow_status"] == "ready_for_execution"
+             else failure_category))
+        result = {
+            "schema_version": SCHEMA_VERSION,
+            "mode": "execute" if execute else "preview",
+            "repository_root": str(root), "batch_id": state["batch_id"],
+            "post_id": int(post_id),
+            "english_post_id": article["english_post_id"],
+            "current_status": state["workflow_status"],
+            "actual_error": actual_error,
+            "execution_evidence": _relative(_execution_path(root, post_id), root),
+            "production_source": "unchanged" if current and not fresh_reasons else "unknown",
+            "strategy": strategy,
+            "strategy_reasons": (
+                ["执行尚未越过 preflight；零 artifact 且生产中英文基线、"
+                 "空中文摘要、资格与 Polylang 均重新验证通过"]
+                if not fresh_reasons else fresh_reasons),
+            "safety_checks": current["checks"] if current else {},
+            "will_execute": (
+                "preflight_transient_retry -> execute_single_candidate"
+                if not fresh_reasons else "blocked"),
+            "baseline_rebuild": "not_required", "reexecution": "not_run",
+            "final_status": state["workflow_status"],
+            "writes_performed": False, "integrity_ok": True,
+        }
+        if not execute or fresh_reasons:
+            return result
+        authorized, authorize_reasons = _authorize_fresh_preflight_retry(
+            root, post_id, source_factory)
+        if not authorized:
+            return {**result, "strategy": "blocked",
+                    "strategy_reasons": authorize_reasons,
+                    "will_execute": "blocked"}
+        operation = _run_ready_once(
+            root, execute=True, batch_id=state["batch_id"], post_id=post_id,
+            runner=runner, recovery_retry=True)
+        item = operation["results"][0] if operation.get("results") else None
+        _, _, _, _, fresh_states = _context(root)
+        final_status = fresh_states[int(post_id)]["workflow_status"]
+        return {**result, "reexecution": (
                     "completed" if item and item["result"] == "completed"
                     else "failed"), "final_status": final_status,
                 "operation_result": item,
@@ -4783,6 +5011,7 @@ def render_recover_text(result):
         "restart_from_current": "restart_from_current",
         "rejected_excerpt_regeneration": "rejected_excerpt_regeneration",
         "retry_excerpt_generation": "retry_excerpt_generation",
+        "preflight_transient_retry": "preflight_transient_retry",
         "retry_prepared_source_restart": "retry_prepared_source_restart",
         "resume": "resume", "retry_from_ready": "retry_from_ready",
         "blocked": "blocked", "none": "none"}

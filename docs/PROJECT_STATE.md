@@ -26,3 +26,37 @@ samples:
   `completed`.
 
 No deployment or production write is implied by this state note.
+
+## Preflight transient-network recovery
+
+The recovery state machine previously had no safe entry point for a transient
+network failure during executor preflight when no execution or pre-write
+artifact had yet been created. Such failures could leave coordination at
+`ready_for_execution`, or make recovery require evidence that correctly did
+not exist. Preflight transient failures are now explicitly persisted at the
+preflight boundary, and the narrow `preflight_transient_retry` recovery path
+revalidates the fixed manifest, validation evidence, production Chinese and
+English baselines, empty Chinese excerpt, structure, eligibility, and
+Polylang relation before authorizing a fresh run. The path remains fail-closed
+for source drift, English drift, mutations, non-transient failures, or any
+artifact.
+
+The executor artifact scan now requires an exact post-ID filename boundary,
+so evidence for posts such as `7692` cannot be mistaken for post `769` (and
+similarly for `7624`, `7512`, and other prefix collisions).
+
+Real production validation for batch `mixed-syntaxhighlighter-20260817-01`
+completed all 20 of 20 articles:
+
+- zh=800: SHA-bound `excerpt_generation_failed` evidence was reauthorized;
+  a subsequent preflight transient failure safely returned to
+  `retry_excerpt_generation`, then completed.
+- zh=769 and zh=762: first preflight SSL EOF failures had zero execution and
+  pre-write artifacts; `preflight_transient_retry` safely authorized fresh
+  execution, then completed.
+- zh=751: first preflight SSL EOF entered `preflight_transient_retry`, then a
+  separate `paragraph_run_punctuation_only` content issue was manually fixed;
+  `restart_from_current` revalidated the source and the article completed.
+
+No WordPress field was manually changed for the recovery-state-machine fix;
+no deployment is implied by this state note.

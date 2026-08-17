@@ -1907,7 +1907,7 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             ).read_text(encoding="utf-8"))["workflow_status"]
             for post_id in (401, 402)
         ]
-        self.assertEqual(["ready_for_execution", "completed"], states)
+        self.assertEqual(["blocked", "completed"], states)
 
     def test_sync_execution_preview_apply_and_identity_conflict(self):
         self.prepare_init_fixture()
@@ -2410,7 +2410,10 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         self.assertEqual("transient_network_error", item["category"])
         self.assertNotIn("abc", item["stderr_summary"])
         self.assertNotIn("visible-secret", item["stdout_summary"])
-        self.assertEqual("ready_for_execution", state["workflow_status"])
+        self.assertEqual("blocked", state["workflow_status"])
+        self.assertEqual("preflight", state["last_failure"]["stage"])
+        self.assertEqual("transient_network_error",
+                         state["last_failure"]["reason"])
         self.assertEqual({}, state["retry_counts"])
 
     def test_deterministic_preflight_failure_is_not_retried(self):
@@ -2538,6 +2541,28 @@ class HistoryMigrationStatusTest(unittest.TestCase):
             mock.Mock(returncode=1, stderr="HTTP Error 401: Unauthorized", stdout=""),
             "preflight")
         self.assertEqual("authentication_error", auth["category"])
+
+    def test_run_ready_records_preflight_failure_before_any_artifact(self):
+        self.prepare_converted()
+        path = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(path.relative_to(self.root)))
+        self.create_execution_manifest()
+
+        result = MODULE.run_ready(
+            self.root, execute=True, max_attempts=1,
+            runner=lambda command, **kwargs: mock.Mock(
+                returncode=1, stdout="", stderr=(
+                    "ssl.SSLEOFError: UNEXPECTED_EOF_WHILE_READING")))
+        state = json.loads(MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401
+        ).read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["workflow_status"])
+        self.assertEqual("preflight", state["last_failure"]["stage"])
+        self.assertEqual(
+            "transient_network_error", state["last_failure"]["reason"])
+        self.assertEqual([], MODULE._execution_artifacts(self.root, 401))
+        self.assertEqual("preflight", result["results"][0]["phase"])
 
     def test_http_400_is_a_client_error_not_a_transient_network_error(self):
         failure = MODULE._classify_subprocess_failure(
@@ -2724,6 +2749,101 @@ class HistoryMigrationStatusTest(unittest.TestCase):
                         "linked_chinese_post_id": chinese_id}
 
         return Source(), content, sha256_text
+
+    def prepare_fresh_preflight_retry(self, *, failure="transient_network_error"):
+        from src.candidate_execution import sha256_text
+
+        self.prepare_converted()
+        (self.root / "config/classification.json").write_bytes(
+            (ROOT / "config/classification.json").read_bytes())
+        validation = self.write_record_validation()
+        MODULE.record_validation(
+            self.root, 401, str(validation.relative_to(self.root)))
+        manifest_path = self.create_execution_manifest()
+        source, content, _ = self.restart_source()
+        rows, _ = MODULE._read_csv(manifest_path)
+        rows[0].update({
+            "chinese_title": "人工修复标题",
+            "chinese_content_sha256": sha256_text(content),
+            "english_title_sha256": sha256_text("English"),
+            "english_excerpt_sha256": sha256_text(""),
+            "english_content_sha256": sha256_text("English body"),
+        })
+        MODULE._atomic_write_csv(
+            manifest_path, MODULE.EXECUTION_MANIFEST_FIELDS, rows)
+        state_path = MODULE._state_path(
+            self.root, "syntaxhighlighter-20260723-01", 401)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update({
+            "workflow_status": "blocked",
+            "execution_evidence": None,
+            "last_failure": {
+                "stage": "preflight", "reason": failure,
+                "returncode": 1, "stderr_summary": "SSLEOFError",
+                "stdout_summary": "",
+            },
+        })
+        MODULE._atomic_write_json(state_path, state)
+        return state_path, source, content
+
+    def test_fresh_transient_preflight_failure_can_retry(self):
+        _, source, _ = self.prepare_fresh_preflight_retry()
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("preflight_transient_retry", result["strategy"])
+        self.assertTrue(all(result["safety_checks"].values()))
+        self.assertIn("恢复策略: preflight_transient_retry",
+                      MODULE.render_recover_text(result))
+
+    def test_fresh_transient_preflight_retry_rejects_chinese_source_drift(self):
+        _, _, content = self.prepare_fresh_preflight_retry()
+        drifted, _, _ = self.restart_source(chinese_content=content + " changed")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: drifted)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertIn("chinese_content_unchanged", result["strategy_reasons"])
+
+    def test_fresh_transient_preflight_retry_rejects_english_drift(self):
+        self.prepare_fresh_preflight_retry()
+        drifted, _, _ = self.restart_source(english_title="changed English")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: drifted)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertIn("english_title_unchanged", result["strategy_reasons"])
+
+    def test_fresh_transient_preflight_retry_rejects_any_artifact(self):
+        _, source, _ = self.prepare_fresh_preflight_retry()
+        MODULE._prewrite_path(self.root, 401).write_text("{}", encoding="utf-8")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertTrue(any("both execution and pre-write" in reason
+                            for reason in result["strategy_reasons"]))
+
+    def test_fresh_transient_preflight_retry_ignores_post_id_prefix_collision(self):
+        _, source, _ = self.prepare_fresh_preflight_retry()
+        self.write_execution(4012, 5012, "completed")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("preflight_transient_retry", result["strategy"])
+
+    def test_fresh_preflight_retry_rejects_nontransient_failure(self):
+        _, source, _ = self.prepare_fresh_preflight_retry(
+            failure="preflight_failed")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertIn(
+            "last_failure is not a transient network preflight failure",
+            result["strategy_reasons"])
+
+    def test_fresh_transient_preflight_retry_rejects_wordpress_mutation(self):
+        self.prepare_fresh_preflight_retry()
+        mutated, _, _ = self.restart_source(excerpt="unexpected mutation")
+        result = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: mutated)
+        self.assertEqual("blocked", result["strategy"])
+        self.assertIn("chinese_excerpt_empty", result["strategy_reasons"])
 
     def prepare_source_restart(self, excerpt=""):
         state_path = self.prepare_blocked_run()
@@ -3275,6 +3395,26 @@ class HistoryMigrationStatusTest(unittest.TestCase):
         })
         MODULE._atomic_write_json(state_path, state)
         return state_path, source, content, execution
+
+    def test_authorized_excerpt_retry_survives_next_transient_preflight(self):
+        state_path, source, _, _ = (
+            self.prepare_source_restart_excerpt_generation_failure(""))
+        restored = MODULE._restore_excerpt_generation_for_retry(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertTrue(restored["changed"])
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual("ready_for_execution", state["workflow_status"])
+
+        MODULE._record_preflight_failure(self.root, state, {
+            "category": "transient_network_error", "returncode": 1,
+            "stderr_summary": (
+                "ssl.SSLEOFError: UNEXPECTED_EOF_WHILE_READING"),
+            "stdout_summary": "",
+        })
+        preview = MODULE.recover(
+            self.root, 401, source_factory=lambda rows: source)
+        self.assertEqual("retry_excerpt_generation", preview["strategy"])
+        self.assertEqual("transient_network_error", preview["actual_error"])
 
     def test_source_restart_nonempty_excerpt_generation_failure_retries(self):
         _, source, _, execution = (
