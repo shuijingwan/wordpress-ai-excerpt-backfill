@@ -1,0 +1,103 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260814-03",
+  "batch_position": 5,
+  "blocked_reasons": [],
+  "chinese_post_id": 7756,
+  "english_post_id": 10072,
+  "execution_evidence": {
+    "sha256": "f42d6c3da49c4e4e3652d7eb9408cb66a0fc9b1c1cf3a99f0ca3dc7d4ff88ce6",
+    "source_file": "data/backups/single-candidate/chinese-7756.execution.json",
+    "status": "excerpt_generation_failed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-14T06:07:10.707091+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-14T05:43:33.583991+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-14T06:07:10.707091+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 5,
+    "error_summary": "HTTP request failed with status 400",
+    "occurred_at": "2026-08-14T06:56:38.938236+00:00",
+    "reason": "http_client_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 450, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "manual_completion": {
+    "confirmed_at": "2026-08-14T07:45:04.620765+00:00",
+    "method": "manual_external",
+    "status": "confirmed"
+  },
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-14T06:07:10.707091+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery": {
+    "action": "retry_excerpt_generation",
+    "execution_sha256": "44fd5b9aff0dc5eb9b9eab1de4279e0754a9044500e85614c69c77018b09655f",
+    "execution_status": "excerpt_generation_failed",
+    "preserved_failure": {
+      "attempt": 3,
+      "error_summary": "",
+      "occurred_at": "2026-08-14T06:24:49.330244+00:00",
+      "reason": "http_client_error",
+      "returncode": 1,
+      "stage": "run",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 450, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 48, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 79, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt)\nsrc.http_json.HttpJsonError: HTTP request failed with status 400\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "recovered_at": "2026-08-14T06:56:20.759198+00:00",
+    "recovery_kind": "excerpt_generation_retry",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 5
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260814-03.csv",
+  "source_batch_sha256": "a8b9f517259215a6f0f3875a94faafb414411fb782055d38b0ea43cc61731206",
+  "source_row_sha256": "742b933b8567206e6be1d962dbd09c430056872189ea75949fcdd9cba9a73428",
+  "updated_at": "2026-08-14T07:45:04.620765+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "0e0664512d3a6eb7a3702972df67323571cba6349e4d2f2e3bb410459890de2e",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "b953b8c4cd08c55246346fce8e57b5cb7af34f8e1d97a78b75cabd3fb71d716c",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260814-03/chinese-7756.csv",
+    "status": "ready",
+    "validated_at": "2026-08-14T06:07:53.215577+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

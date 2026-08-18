@@ -1,0 +1,106 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260816-02",
+  "batch_position": 18,
+  "blocked_reasons": [],
+  "chinese_post_id": 2140,
+  "english_post_id": 15945,
+  "execution_evidence": {
+    "recovery_generation": 1,
+    "sha256": "e12241b8cf958c486040b1f179f5e21a3d20220cab9a7e6cbce509c40e6d0c26",
+    "source_file": "data/backups/single-candidate/chinese-2140.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-16T06:21:46.881191+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-16T06:03:32.526704+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-16T06:21:46.881191+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "error_summary": "swq_full_article_paragraph_run_empty_paragraph: A paragraph run contained an empty paragraph.",
+    "occurred_at": "2026-08-16T06:50:47.745905+00:00",
+    "reason": "wordpress_api_error",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 513, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 91, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt,\n                        status=int(status))\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_full_article_paragraph_run_empty_paragraph: A paragraph run contained an empty paragraph.\n",
+    "stdout_summary": "",
+    "wordpress_code": "swq_full_article_paragraph_run_empty_paragraph",
+    "wordpress_message": "A paragraph run contained an empty paragraph."
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "resume": 2,
+    "run": 1
+  },
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-16T06:21:46.881191+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 0,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260816-02.csv",
+  "source_batch_sha256": "e3dc3330468e07ada149944c68599d7a3bcbe3606abe65a1ac4a641ab15d0195",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-2140/20260816T071952.166316Z",
+    "expected_pre_run_excerpt_sha256": "4fdf4babb2f1968d011ad796fa4372f026c5a0b896227290c791da0a92b683cf",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 2,
+      "error_summary": "swq_full_article_paragraph_run_empty_paragraph: A paragraph run contained an empty paragraph.",
+      "occurred_at": "2026-08-16T06:50:47.745905+00:00",
+      "reason": "wordpress_api_error",
+      "returncode": 1,
+      "stage": "resume",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 513, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 91, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt,\n                        status=int(status))\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_full_article_paragraph_run_empty_paragraph: A paragraph run contained an empty paragraph.\n",
+      "stdout_summary": "",
+      "wordpress_code": "swq_full_article_paragraph_run_empty_paragraph",
+      "wordpress_message": "A paragraph run contained an empty paragraph."
+    },
+    "reason": "Chinese source edited after failed execution",
+    "recovered_at": "2026-08-16T07:19:52.166316+00:00",
+    "recovery_kind": "source_changed_after_translation_failure",
+    "restart_excerpt_state": "known_previous_generated_excerpt",
+    "status": "applied"
+  },
+  "source_row_sha256": "6c526f8c8c3a43f036c6576d7d8fe5854dcde256d4aa13e938d23e4844974b17",
+  "updated_at": "2026-08-16T07:20:32.550697+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "b9af209690fc1ca212dfd3f9df36703332f9f82582550e867e4b2ab313ec7941",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "8e10e768ecbf2aeb6040ac99f7c0943c07dcf2dbcf085bef759bedeec6e4fb43",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260816-02/chinese-2140.csv",
+    "status": "ready",
+    "validated_at": "2026-08-16T06:31:50.909183+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

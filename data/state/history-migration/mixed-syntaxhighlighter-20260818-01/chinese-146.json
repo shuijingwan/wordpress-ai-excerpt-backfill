@@ -1,0 +1,106 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260818-01",
+  "batch_position": 11,
+  "blocked_reasons": [],
+  "chinese_post_id": 146,
+  "english_post_id": 16695,
+  "execution_evidence": {
+    "recovery_generation": 1,
+    "sha256": "928082fe9dbb24b9545911d55e90515764145ba9688e45962527a10b9aef72f7",
+    "source_file": "data/backups/single-candidate/chinese-146.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-18T02:29:10.009364+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-18T01:18:54.580818+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-18T02:29:10.009364+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 2,
+    "error_summary": "swq_full_article_paragraph_run_punctuation_only: A paragraph run contained a punctuation-only paragraph.",
+    "occurred_at": "2026-08-18T02:44:45.713165+00:00",
+    "reason": "wordpress_api_error",
+    "returncode": 1,
+    "stage": "resume",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 523, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 91, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt,\n                        status=int(status))\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_full_article_paragraph_run_punctuation_only: A paragraph run contained a punctuation-only paragraph.\n",
+    "stdout_summary": "",
+    "wordpress_code": "swq_full_article_paragraph_run_punctuation_only",
+    "wordpress_message": "A paragraph run contained a punctuation-only paragraph."
+  },
+  "legacy_import": false,
+  "lifetime_retry_counts": {
+    "resume": 2,
+    "run": 1
+  },
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-18T02:29:10.009364+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery_generation": 1,
+  "retry_counts": {
+    "resume": 0,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260818-01.csv",
+  "source_batch_sha256": "316052be13828145b18ad809be9112d4ce39c1f016487de235994e559cff423f",
+  "source_restart_recovery": {
+    "archive": "data/backups/single-candidate/recovery-history/chinese-146/20260818T032723.565214Z",
+    "expected_pre_run_excerpt_sha256": "182542c87b796c3d8c1c5dc00fb7b51c2935e13285357b7364148472b68549cb",
+    "generation": 1,
+    "preserved_last_failure": {
+      "attempt": 2,
+      "error_summary": "swq_full_article_paragraph_run_punctuation_only: A paragraph run contained a punctuation-only paragraph.",
+      "occurred_at": "2026-08-18T02:44:45.713165+00:00",
+      "reason": "wordpress_api_error",
+      "returncode": 1,
+      "stage": "resume",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 523, in execute\n    response = self.translator.overwrite(zh_id, en_id)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/wordpress_clients.py\", line 52, in overwrite\n    response = request_json(\n        self.transport, \"POST\", TRANSLATE_URL,\n        {\"Content-Type\": \"application/json\", \"X-WP-Nonce\": self.nonce, \"Cookie\": self.cookie},\n        self.payload(chinese_post_id), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 91, in request_json\n    raise HttpJsonError(f\"HTTP request failed with status {status}{detail}\",\n                        response=response, response_excerpt=excerpt,\n                        status=int(status))\nsrc.http_json.HttpJsonError: HTTP request failed with status 500: swq_full_article_paragraph_run_punctuation_only: A paragraph run contained a punctuation-only paragraph.\n",
+      "stdout_summary": "",
+      "wordpress_code": "swq_full_article_paragraph_run_punctuation_only",
+      "wordpress_message": "A paragraph run contained a punctuation-only paragraph."
+    },
+    "reason": "Chinese source edited after failed execution",
+    "recovered_at": "2026-08-18T03:27:23.565214+00:00",
+    "recovery_kind": "source_changed_after_translation_failure",
+    "restart_excerpt_state": "known_previous_generated_excerpt",
+    "status": "applied"
+  },
+  "source_row_sha256": "2d1375e75fe201945540c1caec37406cf261f5539d45f254d8d958f159909363",
+  "updated_at": "2026-08-18T03:28:11.335198+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "ac74c41c86e5029ee693eaa7f9c41d8bf2475e51685bd3b6c8982655b5ec1dfc",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "266c5e85aa0e16ddd4db9e9aad087f775574a8b52c514e1f4a061757331aed06",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260818-01/chinese-146.csv",
+    "status": "ready",
+    "validated_at": "2026-08-18T02:30:42.959746+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

@@ -1,0 +1,98 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260817-01",
+  "batch_position": 17,
+  "blocked_reasons": [],
+  "chinese_post_id": 800,
+  "english_post_id": 16309,
+  "execution_evidence": {
+    "sha256": "7ab8a0705bf30bf3a5f3ac70720b098a36a3b404beceb5ee9eeb0a4930e1ba1c",
+    "source_file": "data/backups/single-candidate/chinese-800.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-17T02:23:20.501292+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-17T01:37:07.926903+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-17T02:23:20.501292+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 1,
+    "error_summary": "network request failed: RemoteDisconnected",
+    "occurred_at": "2026-08-17T03:00:55.762104+00:00",
+    "reason": "transient_network_error",
+    "returncode": 1,
+    "stage": "run",
+    "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 61, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 305, in _read_status\n    raise RemoteDisconnected(\"Remote end closed connection without\"\n                             \" response\")\nhttp.client.RemoteDisconnected: Remote end closed connection without response\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 465, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 63, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 72, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 66, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: RemoteDisconnected\n",
+    "stdout_summary": "",
+    "wordpress_code": null,
+    "wordpress_message": null
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-17T02:23:20.501292+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "recovery": {
+    "action": "retry_excerpt_generation",
+    "execution_sha256": "db84a6f2990f17c19a2e0e84514a6b9bc346a4204031888f56afe26d1a2745e4",
+    "execution_status": "excerpt_generation_failed",
+    "preserved_failure": {
+      "attempt": 1,
+      "error_summary": "network request failed: RemoteDisconnected",
+      "occurred_at": "2026-08-17T03:00:55.762104+00:00",
+      "reason": "transient_network_error",
+      "returncode": 1,
+      "stage": "run",
+      "stderr_summary": "Traceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 61, in urllib_transport\n    with urllib.request.urlopen(request, timeout=timeout) as response:\n         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 187, in urlopen\n    return opener.open(url, data, timeout)\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 487, in open\n    response = self._open(req, data)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 504, in _open\n    result = self._call_chain(self.handle_open, protocol, protocol +\n                              '_open', req)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 464, in _call_chain\n    result = func(*args)\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1369, in https_open\n    return self.do_open(http.client.HTTPSConnection, req,\n           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                        context=self._context)\n                        ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.14/urllib/request.py\", line 1325, in do_open\n    r = h.getresponse()\n  File \"/usr/lib/python3.14/http/client.py\", line 1459, in getresponse\n    response.begin()\n    ~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 336, in begin\n    version, status, reason = self._read_status()\n                              ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/lib/python3.14/http/client.py\", line 305, in _read_status\n    raise RemoteDisconnected(\"Remote end closed connection without\"\n                             \" response\")\nhttp.client.RemoteDisconnected: Remote end closed connection without response\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 125, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/bin/execute-single-candidate.py\", line 117, in main\n    state = flow.execute(args.post_id, resume=args.resume)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/single_candidate_flow.py\", line 465, in execute\n    excerpt = self.glm.generate(live[\"chinese_title\"], cleaned_content)\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/glm47_excerpt_client.py\", line 63, in generate\n    response = request_json(\n        self.transport, \"POST\", GLM_URL,\n        {\"Content-Type\": \"application/json\", \"Authorization\": f\"Bearer [REDACTED],\n        self.payload(title, cleaned_content), self.timeout,\n    )\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 72, in request_json\n    status, raw = transport(method, url, headers, body, timeout)\n                  ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/wangqiang/code/wordpress-ai-excerpt-backfill/src/http_json.py\", line 66, in urllib_transport\n    raise HttpJsonError(f\"network request failed: {type(error).__name__}\") from error\nsrc.http_json.HttpJsonError: network request failed: RemoteDisconnected\n",
+      "stdout_summary": "",
+      "wordpress_code": null,
+      "wordpress_message": null
+    },
+    "recovered_at": "2026-08-17T04:35:00.750965+00:00",
+    "recovery_kind": "excerpt_generation_retry",
+    "stage": "run",
+    "status": "applied"
+  },
+  "retry_counts": {
+    "run": 2
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260817-01.csv",
+  "source_batch_sha256": "42f123a34e9a23edc3204a7e25497668f51a6eddf4c78653a2eb8ff0e651b873",
+  "source_row_sha256": "81f3af17044a28486a0529d901919bde1faa6a7d6a3197a140ed3ea9b608f166",
+  "updated_at": "2026-08-17T04:36:17.311048+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "3b4055404ac38ba3cac269a0cfed18c87e0f27c685e3238dadca686807cea6d0",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "22c3af4454c263a69f897f9ef81ae2a917565d1c6ebbce766c4d47f7fccbf79c",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260817-01/chinese-800.csv",
+    "status": "ready",
+    "validated_at": "2026-08-17T02:25:40.163596+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}

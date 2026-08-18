@@ -1,0 +1,17 @@
+{
+  "source": "production runtime inspection on 2026-08-18",
+  "plugin_name": "SyntaxHighlighter Evolved",
+  "plugin_version": "3.7.2",
+  "shortcode_case_sensitive": true,
+  "shortcodes": [
+    "sourcecode", "source", "code", "as3", "actionscript3", "arduino",
+    "bash", "shell", "coldfusion", "cf", "clojure", "clj", "cpp", "c",
+    "c-sharp", "csharp", "css", "delphi", "pas", "pascal", "diff",
+    "patch", "erl", "erlang", "fsharp", "go", "golang", "groovy",
+    "haskell", "java", "jfx", "javafx", "js", "jscript", "javascript",
+    "tex", "matlab", "matlabkey", "objc", "obj-c", "perl", "pl", "php",
+    "plain", "text", "ps", "powershell", "py", "python", "splus", "rails",
+    "rb", "ror", "ruby", "scala", "sql", "swift", "vb", "vbnet", "xml",
+    "xhtml", "xslt", "html", "yaml", "yml"
+  ]
+}

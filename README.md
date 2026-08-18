@@ -26,9 +26,9 @@
 - 按结构语义识别 Gutenberg 区块外的空残留，同时保留对真实经典内容的检测。
 - 防止分析器输入与输出指向同一文件，包括符号链接和硬链接。
 - 覆盖格式夹具、资格判断、导出合约和本地分析的自动化测试。
-- 已完成 3 条、20 条和 100 条中文已发布文章的受控生产导出；下载后已核对 SHA-256，并完成本地分析。
-- 历史迁移固定范围已完成：45 个固定批次、857 篇文章，`completed=857`、`failed=0`、`remaining=0`、`integrity=ok`。
-- 所有纳入历史迁移范围的文章均已生成中文摘要并完成英文覆盖翻译；执行证据完整，无 pending、translation_started 或其他未完成执行证据。
+- 已完成 3 条、20 条、100 条及 SyntaxHighlighter retirement audit 的 1,438 条中文已发布文章受控生产导出；下载后已核对 SHA-256，并完成本地分析。
+- 历史迁移固定范围已完成：67 个固定批次、1,281 篇文章，协调状态 `count=1281`、`remaining=0`、`integrity=ok`，所有批次均已完成。执行证据汇总为 `completed=1279`、`failed=2`、`pending=0`、`translation_started=0`；失败记录均已由最终协调状态收口，不存在待处理工作。
+- 所有纳入历史迁移范围的文章均已完成最终协调收口；无 pending、translation_started 或其他未完成执行状态。
 - 普通 Mixed 候选已耗尽。最后 5 篇显式异常文章通过 `mixed-syntaxhighlighter-special-20260812-01` 固定批次完成，`total=5`、`completed=5`、`remaining=0`、`integrity=ok`。
 - 当前没有未完成批次。
 
@@ -38,6 +38,36 @@
 2. Code Block Pro 的短代码保护范围必须覆盖完整 Gutenberg 区块，包括开始/结束注释及开始注释中的 JSON 属性。
 3. CBP JSON `code` 属性内的 `[code]` 等字面量不是区块外 SyntaxHighlighter 或 shortcode 结构损坏。
 4. 已完成且确定性的生产 preflight 拒绝不应对同一候选重复重试。
+
+### SyntaxHighlighter retirement audit
+
+卸载准备使用独立的只读人工检查审计，不改变 migration detector 或状态机。生产
+`SyntaxHighlighter Evolved 3.7.2` 的运行时 shortcode 清单固化在
+`config/syntaxhighlighter-retirement.json`；插件版本或生产 filter 变化后必须重新
+只读取证，不能凭历史命中类型扩展。
+
+输入必须是重新导出的 `post_type=post`、`post_status=publish`、Polylang `zh` JSONL。
+`bin/export-readonly.php` 可按 `ID ASC`、每页最多 100 条继续复用；每次以上一页最后
+一条 JSON 的 `post_id` 作为下一页 `--after-id`，最后一页少于 100 条时结束。不要复用
+历史 raw snapshot。下载各页并核对运行脚本报告的 SHA-256 后运行：
+
+```bash
+python3 bin/build-syntaxhighlighter-retirement-audit.py \
+  --input data/raw/wordpress-zh-posts-PAGE-01.jsonl \
+  --input data/raw/wordpress-zh-posts-PAGE-02.jsonl
+```
+
+`--input` 可重复。scanner 会验证 schema、正文 SHA-256、重复 post ID 和严格数据范围，
+并在所有正文区域查找生产插件实际注册的小写 shortcode opening/closing 标记；不会保护
+Code Block Pro、Gutenberg code block、`pre`、`code`、HTML 或 freeform 区域。
+`[[php]...[/php]]` 这类 WordPress escaped literal 不会命中。
+
+输出是被 `.gitignore` 覆盖的本地产物：
+
+- `data/analysis/syntaxhighlighter-retirement-audit.csv`
+- `data/analysis/syntaxhighlighter-retirement-audit.txt`
+
+它们只是人工检查候选清单；命中不代表错误、必须修改或卸载前必须清零。
 
 ## 安全边界
 

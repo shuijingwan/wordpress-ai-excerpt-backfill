@@ -1,0 +1,75 @@
+{
+  "batch_id": "mixed-syntaxhighlighter-20260815-03",
+  "batch_position": 11,
+  "blocked_reasons": [],
+  "chinese_post_id": 5050,
+  "english_post_id": 14471,
+  "execution_evidence": {
+    "sha256": "f0586be3c86bddb4313a6d698b9b8bdcd2598fc799f2eac33d2006a9b5991a88",
+    "source_file": "data/backups/single-candidate/chinese-5050.execution.json",
+    "status": "completed"
+  },
+  "gutenberg_normalization": {
+    "confirmed_at": "2026-08-15T09:48:52.478445+00:00",
+    "status": "confirmed"
+  },
+  "initialization_reason": "fixed SyntaxHighlighter article has no validation or execution evidence",
+  "initialized_at": "2026-08-15T08:53:47.846006+00:00",
+  "language_review": {
+    "confirmed_at": "2026-08-15T09:48:52.478445+00:00",
+    "status": "confirmed"
+  },
+  "last_failure": {
+    "attempt": 3,
+    "occurred_at": "2026-08-15T11:48:35.544268+00:00",
+    "reason": "preflight_failed",
+    "returncode": 2,
+    "stage": "resume",
+    "stderr_summary": "ERROR: WP_ADMIN_COOKIE and WP_REST_NONCE are required\n",
+    "stdout_summary": ""
+  },
+  "legacy_import": false,
+  "manual_conversion": {
+    "cbp_count_after": 0,
+    "confirmed_at": "2026-08-15T09:48:52.478445+00:00",
+    "status": "confirmed",
+    "syntax_count_before": 0
+  },
+  "retry_counts": {
+    "resume": 4,
+    "run": 1
+  },
+  "schema_version": 1,
+  "source_batch_file": "data/analysis/mixed-syntaxhighlighter-migration-batch-20260815-03.csv",
+  "source_batch_sha256": "87649e555998ea63ca03b70b7787e0d50c98c1be26593e4f6b24b1c64437fd4a",
+  "source_row_sha256": "4121400e0e98c51d978c606b7340953a333341f830cc7eefa77296840d747c21",
+  "updated_at": "2026-08-15T12:22:52.287847+00:00",
+  "validation_evidence": {
+    "after_content_sha256": "16212270b19ac0f4f9c899ce057176f834315a6e35fcae6914d09326a70b4804",
+    "checks": {
+      "after_editor_format": true,
+      "before_cbp_count": true,
+      "before_editor_format": true,
+      "before_syntax_count": true,
+      "chinese_excerpt_empty": true,
+      "chinese_language": true,
+      "chinese_publish": true,
+      "classic_outside_blocks_after": true,
+      "code_block_pro_count": true,
+      "english_publish": true,
+      "gutenberg_balanced": true,
+      "gutenberg_normalization_confirmed": true,
+      "manual_cbp_count": true,
+      "polylang_relation_normal": true,
+      "syntaxhighlighter_zero": true,
+      "unknown_code_formats_zero": true
+    },
+    "failure_reasons": [],
+    "sha256": "09c1ff5fe7c304f773f850d7b77a9c8eee53f2854a4371edab4d1b2871525fed",
+    "source_file": "data/analysis/history-migration-validation/mixed-syntaxhighlighter-20260815-03/chinese-5050.csv",
+    "status": "ready",
+    "validated_at": "2026-08-15T09:49:42.708301+00:00"
+  },
+  "validation_failure_reasons": [],
+  "workflow_status": "completed"
+}
